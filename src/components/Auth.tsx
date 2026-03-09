@@ -72,10 +72,14 @@ export function Auth({ onAuthSuccess }: AuthProps) {
         </div>
 
         <h1 className="text-2xl font-bold text-center text-gray-900 dark:text-white mb-2">
-          Gestor de Carrera
+          Bienvenido{!isLogin && career ? ',' : ''}
         </h1>
         <p className="text-center text-gray-600 dark:text-gray-400 mb-8">
-          Ingeniería de Software - UNICARIBE
+          {isLogin
+            ? 'creado por AX300'
+            : career
+              ? career
+              : 'Selecciona tu carrera al registrarte'}
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">

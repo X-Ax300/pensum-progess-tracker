@@ -120,14 +120,19 @@ export function Dashboard() {
     }
   };
 
-  const renderHeader = () => (
-    <header className="mb-8 flex flex-col sm:flex-row items-start sm:items-center justify-between bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
-          {userProfile?.career || 'Ingeniería de Software'} - UNICARIBE
-        </h1>
-        <p className="text-gray-600 dark:text-gray-400">Gestión de progreso académico</p>
-      </div>
+  const renderHeader = () => {
+    const hasCareer = Boolean(userProfile?.career);
+    return (
+      <header className="mb-8 flex flex-col sm:flex-row items-start sm:items-center justify-between bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+        <div>
+          <h2 className="text-lg text-gray-700 dark:text-gray-300">Bienvenido{hasCareer ? ',' : ''}</h2>
+          {hasCareer && userProfile?.career && (
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-1">
+              {userProfile.career}
+            </h1>
+          )}
+          <p className="text-xs text-gray-500 dark:text-gray-400">creado por AX300</p>
+        </div>
       <div className="flex items-center gap-3 mt-4 sm:mt-0">
         {/* only shown on sm+ screens */}
         <button
@@ -158,6 +163,7 @@ export function Dashboard() {
       </div>
     </header>
   );
+  }  // end renderHeader
 
   const renderStats = () => (
     <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 mb-8">
