@@ -121,17 +121,18 @@ export function Dashboard() {
   };
 
   const renderHeader = () => (
-    <header className="mb-8 flex items-center justify-between bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+    <header className="mb-8 flex flex-col sm:flex-row items-start sm:items-center justify-between bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
       <div>
         <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
           {userProfile?.career || 'Ingeniería de Software'} - UNICARIBE
         </h1>
         <p className="text-gray-600 dark:text-gray-400">Gestión de progreso académico</p>
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 mt-4 sm:mt-0">
+        {/* only shown on sm+ screens */}
         <button
           onClick={toggleTheme}
-          className="p-3 rounded-lg bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-all duration-200 transform hover:scale-105"
+          className="hidden sm:inline p-3 rounded-lg bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-all duration-200 transform hover:scale-105"
           title={`Cambiar a tema ${theme === 'light' ? 'oscuro' : 'claro'}`}
         >
           {theme === 'light' ? (
@@ -142,14 +143,14 @@ export function Dashboard() {
         </button>
         <button
           onClick={() => setShowProfile(true)}
-          className="p-3 rounded-lg bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-all duration-200 transform hover:scale-105"
+          className="hidden sm:inline p-3 rounded-lg bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-all duration-200 transform hover:scale-105"
           title="Perfil de usuario"
         >
           <User className="w-5 h-5 text-gray-700 dark:text-gray-300 transition-colors" />
         </button>
         <button
           onClick={handleLogout}
-          className="flex items-center gap-2 px-6 py-3 rounded-lg bg-red-600 hover:bg-red-700 text-white transition-all duration-200 font-medium transform hover:scale-105"
+          className="hidden sm:flex items-center gap-2 px-6 py-3 rounded-lg bg-red-600 hover:bg-red-700 text-white transition-all duration-200 font-medium transform hover:scale-105"
         >
           <LogOut className="w-4 h-4" />
           Cerrar sesión
@@ -237,7 +238,7 @@ export function Dashboard() {
   );
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 pb-16 sm:pb-0">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {renderHeader()}
 
@@ -279,6 +280,37 @@ export function Dashboard() {
           onClose={() => setShowProfile(false)}
         />
       )}
+
+      {/* mobile bottom navigation */}
+      <nav className="fixed bottom-0 left-0 right-0 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 py-2 sm:hidden">
+        <div className="flex justify-around">
+          <button
+            onClick={toggleTheme}
+            title="Tema"
+            className="p-2"
+          >
+            {theme === 'light' ? (
+              <Moon className="w-6 h-6 text-gray-700 dark:text-gray-300" />
+            ) : (
+              <Sun className="w-6 h-6 text-gray-700 dark:text-gray-300" />
+            )}
+          </button>
+          <button
+            onClick={() => setShowProfile(true)}
+            title="Perfil"
+            className="p-2"
+          >
+            <User className="w-6 h-6 text-gray-700 dark:text-gray-300" />
+          </button>
+          <button
+            onClick={handleLogout}
+            title="Cerrar sesión"
+            className="p-2"
+          >
+            <LogOut className="w-6 h-6 text-red-600" />
+          </button>
+        </div>
+      </nav>
     </div>
   );
 }
