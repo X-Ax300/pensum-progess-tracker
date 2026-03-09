@@ -1,7 +1,7 @@
 // src/components/UploadPensum.tsx
-import { useState } from 'react';
-import { collection, addDoc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { useState, useEffect } from 'react';
+import { collection, addDoc, doc, getDoc, writeBatch } from 'firebase/firestore';
+import { auth, db } from '../lib/firebase';
 // we only need getDocument; import path has no types so ignore TS
 // setup worker for pdfjs to avoid runtime error
 import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
@@ -10,7 +10,7 @@ import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist/legacy/build/pdf.mj
 // Vite handles `?url` suffix to return a public path string
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 GlobalWorkerOptions.workerSrc = workerUrl;
-import { Upload, FileText, CheckCircle, AlertCircle } from 'lucide-react';
+import { Upload, FileText, CheckCircle, AlertCircle, Lock } from 'lucide-react';
 
 interface ParsedSubject {
   code: string;
@@ -28,6 +28,41 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [career, setCareer] = useState('');
+  const [pensumExists, setPensumExists] = useState(false);
+  const [checkingPensum, setCheckingPensum] = useState(false);
+  const [user, setUser] = useState(auth.currentUser);
+
+  // Subscribe to auth state changes
+  useEffect(() => {
+    const unsub = auth.onAuthStateChanged((authUser) => {
+      setUser(authUser);
+    });
+    return unsub;
+  }, []);
+
+  // Check if pensum already exists
+  useEffect(() => {
+    if (!career) {
+      setPensumExists(false);
+      return;
+    }
+
+    const checkPensumExists = async () => {
+      setCheckingPensum(true);
+      try {
+        const pensumRef = doc(db, 'pensum', career);
+        const pensumDoc = await getDoc(pensumRef);
+        setPensumExists(pensumDoc.exists());
+      } catch (err) {
+        console.error('Error checking pensum:', err);
+        setPensumExists(false);
+      } finally {
+        setCheckingPensum(false);
+      }
+    };
+
+    checkPensumExists();
+  }, [career]);
 
   // helpers --------------------------------------------------------------
 
@@ -120,22 +155,42 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
   };
 
   const saveSubjects = async (subjects: ParsedSubject[], career: string) => {
-    const col = collection(db, 'subjects');
+    if (!user) throw new Error('Usuario no autenticado');
+
+    const batch = writeBatch(db);
+
+    // Create pensum metadata document
+    const pensumRef = doc(db, 'pensum', career);
+    batch.set(pensumRef, {
+      careerName: career,
+      uploadedBy: user.uid,
+      uploadedAt: new Date(),
+      totalSubjects: subjects.length,
+      description: `Pensum de ${career}`,
+      createdAt: new Date(),
+    });
+
+    // Add subjects to subcollection
+    const subjectsRef = collection(db, 'pensum', career, 'subjects');
     for (const s of subjects) {
-      await addDoc(col, {
+      const docRef = doc(subjectsRef);
+      batch.set(docRef, {
         code: s.code,
         name: s.name,
         credits: s.credits,
         semester: s.semester,
         career,
+        isValidated: false,
         createdAt: new Date(),
       });
     }
 
-    const prereqCol = collection(db, 'prerequisites');
+    // Add prerequisites to subcollection
+    const prereqRef = collection(db, 'pensum', career, 'prerequisites');
     for (const s of subjects) {
       for (const dep of s.prereqs) {
-        await addDoc(prereqCol, {
+        const docRef = doc(prereqRef);
+        batch.set(docRef, {
           subjectCode: s.code,
           prerequisiteCode: dep,
           career,
@@ -143,6 +198,9 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
         });
       }
     }
+
+    // Commit batch
+    await batch.commit();
   };
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -154,6 +212,11 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
       return;
     }
 
+    if (pensumExists) {
+      setError('El pensum de esta carrera ya existe. No se puede sobreescribir.');
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
@@ -161,14 +224,17 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
       const text = await extractTextFromPdf(file);
       const subjects = parseSubjectsFromText(text);
       await saveSubjects(subjects, career);
-      alert(`${subjects.length} materias importadas`);
+      alert(`${subjects.length} materias importadas para ${career}`);
       if (onUpload) {
         // refresh parent data after import - only clear cache for this career
         await Promise.resolve(onUpload(career));
       }
+      // Reset form
+      setCareer('');
+      setPensumExists(false);
     } catch (err) {
       console.error(err);
-      setError('No se pudo leer el PDF');
+      setError('No se pudo leer el PDF o guardar los datos');
     } finally {
       setLoading(false);
     }
@@ -200,7 +266,7 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
             <option value="">Selecciona la carrera del pensum</option>
             <option value="Ingeniería de Software">Ingeniería de Software</option>
             <option value="Ingeniería de Datos">Ingeniería de Datos</option>
-            <option value="Ingeniería Informática">Ingeniería Informática</option>
+            <option value="Ingeniería en Ciberseguridad">Ingeniería en Ciberseguridad</option>
             <option value="Ciencias de la Computación">Ciencias de la Computación</option>
             <option value="Ingeniería Civil">Ingeniería Civil</option>
             <option value="Ingeniería Mecánica">Ingeniería Mecánica</option>
@@ -215,24 +281,45 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
           <label htmlFor="pdf-upload" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
             Archivo PDF
           </label>
-          <div className="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-6 text-center hover:border-blue-400 dark:hover:border-blue-500 transition">
+          {pensumExists && !checkingPensum && (
+            <div className="mb-4 bg-yellow-50 dark:bg-yellow-900 border border-yellow-200 dark:border-yellow-700 rounded-lg p-4">
+              <div className="flex items-center gap-3">
+                <Lock className="w-5 h-5 text-yellow-600 dark:text-yellow-400" />
+                <div>
+                  <p className="font-medium text-yellow-800 dark:text-yellow-200">
+                    Pensum de {career} ya existe
+                  </p>
+                  <p className="text-sm text-yellow-700 dark:text-yellow-300">
+                    No se puede cargar otro PDF para esta carrera para evitar sobrecargar la base de datos.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+          <div className={`border-2 border-dashed rounded-lg p-6 text-center transition ${
+            pensumExists && !checkingPensum
+              ? 'border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800'
+              : 'border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500'
+          }`}>
             <input
               type="file"
               accept="application/pdf"
               onChange={handleFile}
-              disabled={loading || !career}
+              disabled={loading || !career || pensumExists || checkingPensum}
               className="hidden"
               id="pdf-upload"
             />
             <label
               htmlFor="pdf-upload"
-              className={`cursor-pointer ${loading || !career ? 'cursor-not-allowed opacity-50' : ''}`}
+              className={`cursor-pointer ${
+                loading || !career || pensumExists || checkingPensum ? 'cursor-not-allowed opacity-50' : ''
+              }`}
             >
               <div className="flex flex-col items-center gap-3">
                 <FileText className="w-12 h-12 text-gray-400 dark:text-gray-500" />
                 <div>
                   <p className="text-lg font-medium text-gray-900 dark:text-white">
-                    {loading ? 'Procesando...' : 'Haz clic para seleccionar PDF'}
+                    {checkingPensum ? 'Verificando pensum...' : loading ? 'Procesando...' : 'Haz clic para seleccionar PDF'}
                   </p>
                   <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
                     Solo archivos PDF • Máx. 10MB

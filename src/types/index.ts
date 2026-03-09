@@ -23,6 +23,7 @@ export interface UserProgress {
   subjectCode: string;
   status: 'pending' | 'in_progress' | 'completed';
   isValidated: boolean;
+  career: string;
   createdAt: string;
   updatedAt: string;
 }

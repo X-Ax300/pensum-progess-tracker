@@ -40,63 +40,97 @@ export function usePensum() {
 
       if (user) {
         // Cargar perfil del usuario
-        const profileDoc = await getDocs(query(
-          collection(db, 'userProfiles'),
-          where('userId', '==', user.uid)
-        ));
-        if (!profileDoc.empty) {
-          profileData = {
-            id: profileDoc.docs[0].id,
-            ...profileDoc.docs[0].data(),
-          } as UserProfile;
+        try {
+          const profileDoc = await getDocs(query(
+            collection(db, 'userProfiles'),
+            where('userId', '==', user.uid)
+          ));
+          if (!profileDoc.empty) {
+            profileData = {
+              id: profileDoc.docs[0].id,
+              ...profileDoc.docs[0].data(),
+            } as UserProfile;
+          }
+          setUserProfile(profileData);
+        } catch (profileErr) {
+          console.warn('Warning loading user profile:', profileErr);
+          setUserProfile(null);
         }
-        setUserProfile(profileData);
       }
 
-      // Cargar subjects y prerequisites por carrera
+      // Cargar subjects y prerequisites desde subcollections por carrera
       if (profileData?.career) {
-        const [subjectsSnapshot, prerequisitesSnapshot] = await Promise.all([
-          getDocs(query(collection(db, 'subjects'), where('career', '==', profileData.career))),
-          getDocs(query(collection(db, 'prerequisites'), where('career', '==', profileData.career)))
-        ]);
+        try {
+          const [subjectsSnapshot, prerequisitesSnapshot] = await Promise.all([
+            getDocs(collection(db, 'pensum', profileData.career, 'subjects')),
+            getDocs(collection(db, 'pensum', profileData.career, 'prerequisites'))
+          ].map(p => p.catch(err => {
+            // Si falla por permisos, retorna snapshot vacío
+            if (err instanceof Error && err.message.includes('Missing or insufficient permissions')) {
+              console.warn(`No permission to access career data: ${profileData.career}`);
+              return { docs: [], empty: true } as any;
+            }
+            throw err;
+          })));
 
-        const subjectsData = subjectsSnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data(),
-        } as Subject)).sort((a, b) => a.semester - b.semester);
+          const subjectsData = subjectsSnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data(),
+          } as Subject)).sort((a, b) => a.semester - b.semester);
 
-        const prerequisitesData = prerequisitesSnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data(),
-        } as Prerequisite));
+          const prerequisitesData = prerequisitesSnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data(),
+          } as Prerequisite));
 
-        setSubjects(subjectsData);
-        setPrerequisites(prerequisitesData);
+          setSubjects(subjectsData);
+          setPrerequisites(prerequisitesData);
+        } catch (err) {
+          console.warn('Warning loading career data:', err);
+          setSubjects([]);
+          setPrerequisites([]);
+        }
       } else {
         setSubjects([]);
         setPrerequisites([]);
       }
 
-      // Cargar progreso del usuario
+      // Cargar progreso del usuario filtrando por carrera si existe
       if (user) {
-        const userProgressQuery = query(
-          collection(db, 'user_progress'),
-          where('userId', '==', user.uid)
-        );
-        const progressSnapshot = await getDocs(userProgressQuery);
-        const progressData = progressSnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data(),
-        } as UserProgress));
+        try {
+          let userProgressQuery;
+          if (profileData?.career) {
+            userProgressQuery = query(
+              collection(db, 'user_progress'),
+              where('userId', '==', user.uid),
+              where('career', '==', profileData.career)
+            );
+          } else {
+            userProgressQuery = query(
+              collection(db, 'user_progress'),
+              where('userId', '==', user.uid)
+            );
+          }
+          const progressSnapshot = await getDocs(userProgressQuery);
+          const progressData = progressSnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data(),
+          } as UserProgress));
 
-        setUserProgress(progressData);
-        setCurrentUid(user.uid);
+          setUserProgress(progressData);
+          setCurrentUid(user.uid);
+        } catch (progressErr) {
+          console.warn('Warning loading user progress:', progressErr);
+          setUserProgress([]);
+          setCurrentUid(user.uid);
+        }
       } else {
         setUserProgress([]);
         setCurrentUid(null);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load data');
+      const errorMsg = err instanceof Error ? err.message : 'Failed to load data';
+      setError(`${errorMsg}. Por favor actualiza las Security Rules de Firestore.`);
       console.error('Error loading pensum data:', err);
     } finally {
       setLoading(false);
@@ -135,6 +169,13 @@ export function usePensum() {
     const user = auth.currentUser;
     if (!user) throw new Error('User not authenticated');
 
+    const profileDoc = await getDocs(query(
+      collection(db, 'userProfiles'),
+      where('userId', '==', user.uid)
+    ));
+    const profileData = profileDoc.empty ? null : profileDoc.docs[0].data();
+    const career = profileData?.career || 'Unknown';
+
     const existingProgress = userProgress.find(p => p.subjectCode === subjectCode);
     const batch = writeBatch(db);
 
@@ -162,6 +203,7 @@ export function usePensum() {
         subjectCode,
         status,
         isValidated: false,
+        career,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
@@ -188,6 +230,13 @@ export function usePensum() {
   const updateValidatedStatus = useCallback(async (subjectCode: string, isValidated: boolean) => {
     const user = auth.currentUser;
     if (!user) throw new Error('User not authenticated');
+
+    const profileDoc = await getDocs(query(
+      collection(db, 'userProfiles'),
+      where('userId', '==', user.uid)
+    ));
+    const profileData = profileDoc.empty ? null : profileDoc.docs[0].data();
+    const career = profileData?.career || 'Unknown';
 
     const existingProgress = userProgress.find(p => p.subjectCode === subjectCode);
     const batch = writeBatch(db);
@@ -221,6 +270,7 @@ export function usePensum() {
         subjectCode,
         status: 'completed',
         isValidated: true,
+        career,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };

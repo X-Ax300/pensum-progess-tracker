@@ -111,7 +111,7 @@ export function Profile({ userProfile, onProfileUpdate, onClose }: ProfileProps)
               <option value="">Selecciona una carrera</option>
               <option value="Ingeniería de Software">Ingeniería de Software</option>
               <option value="Ingeniería de Datos">Ingeniería de Datos</option>
-              <option value="Ingeniería Informática">Ingeniería Informática</option>
+              <option value="Ingeniería en Ciberseguridad">Ingeniería en Ciberseguridad</option>
               <option value="Ciencias de la Computación">Ciencias de la Computación</option>
               <option value="Otra">Otra</option>
             </select>
