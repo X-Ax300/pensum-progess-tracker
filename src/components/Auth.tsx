@@ -90,8 +90,9 @@ export function Auth({ onAuthSuccess }: AuthProps) {
       if (isLogin) {
         const userCredential = await signInWithEmailAndPassword(auth, email, password);
         if (!userCredential.user.emailVerified) {
+          await sendEmailVerification(userCredential.user);
           await signOut(auth);
-          setError('Debes verificar tu correo electrónico antes de iniciar sesión.');
+          setError('Tu correo no está verificado. Te reenviamos el enlace de verificación.');
           return;
         }
         await ensureUserProfile(userCredential.user.uid);
