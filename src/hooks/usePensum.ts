@@ -4,8 +4,6 @@ import {
   query,
   where,
   getDocs,
-  setDoc,
-  updateDoc,
   doc,
   serverTimestamp,
   writeBatch,
@@ -29,6 +27,14 @@ export function usePensum() {
     });
     return unsub;
   }, []);
+
+  function getUserProgressCollection(uid: string) {
+    return collection(db, 'users', uid, 'progress');
+  }
+
+  function getUserProgressDocId(career: string, subjectCode: string) {
+    return `${encodeURIComponent(career)}__${subjectCode}`;
+  }
 
   async function loadData() {
     try {
@@ -98,24 +104,36 @@ export function usePensum() {
       // Cargar progreso del usuario filtrando por carrera si existe
       if (user) {
         try {
-          let userProgressQuery;
-          if (profileData?.career) {
-            userProgressQuery = query(
-              collection(db, 'user_progress'),
-              where('userId', '==', user.uid),
-              where('career', '==', profileData.career)
-            );
-          } else {
-            userProgressQuery = query(
-              collection(db, 'user_progress'),
-              where('userId', '==', user.uid)
-            );
-          }
-          const progressSnapshot = await getDocs(userProgressQuery);
-          const progressData = progressSnapshot.docs.map(doc => ({
+          const userProgressRef = getUserProgressCollection(user.uid);
+          const nestedProgressQuery = profileData?.career
+            ? query(userProgressRef, where('career', '==', profileData.career))
+            : userProgressRef;
+
+          const progressSnapshot = await getDocs(nestedProgressQuery);
+          let progressData = progressSnapshot.docs.map(doc => ({
             id: doc.id,
             ...doc.data(),
           } as UserProgress));
+
+          // Temporary legacy fallback while old root-level documents still exist.
+          if (progressData.length === 0) {
+            const legacyQuery = profileData?.career
+              ? query(
+                  collection(db, 'user_progress'),
+                  where('userId', '==', user.uid),
+                  where('career', '==', profileData.career)
+                )
+              : query(
+                  collection(db, 'user_progress'),
+                  where('userId', '==', user.uid)
+                );
+
+            const legacySnapshot = await getDocs(legacyQuery);
+            progressData = legacySnapshot.docs.map(doc => ({
+              id: doc.id,
+              ...doc.data(),
+            } as UserProgress));
+          }
 
           setUserProgress(progressData);
           setCurrentUid(user.uid);
@@ -147,15 +165,23 @@ export function usePensum() {
       return;
     }
 
-    const userProgressQuery = query(
-      collection(db, 'user_progress'),
-      where('userId', '==', user.uid)
-    );
+    const userProgressQuery = getUserProgressCollection(user.uid);
     const progressSnapshot = await getDocs(userProgressQuery);
-    const progressData = progressSnapshot.docs.map(doc => ({
+    let progressData = progressSnapshot.docs.map(doc => ({
       id: doc.id,
       ...doc.data(),
     } as UserProgress));
+
+    if (progressData.length === 0) {
+      const legacySnapshot = await getDocs(query(
+        collection(db, 'user_progress'),
+        where('userId', '==', user.uid)
+      ));
+      progressData = legacySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+      } as UserProgress));
+    }
 
     setUserProgress(progressData);
     setCurrentUid(user.uid);
@@ -181,23 +207,48 @@ export function usePensum() {
 
     if (existingProgress) {
       // Update existing progress
-      const progressRef = doc(db, 'user_progress', existingProgress.id);
-      batch.update(progressRef, {
-        status,
-        updatedAt: serverTimestamp(),
-      });
+      const progressDocId = getUserProgressDocId(existingProgress.career || career, subjectCode);
+      const progressRef = doc(
+        db,
+        'users',
+        user.uid,
+        'progress',
+        progressDocId
+      );
+      if (existingProgress.id === progressDocId) {
+        batch.update(progressRef, {
+          status,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        batch.set(progressRef, {
+          userId: user.uid,
+          subjectCode,
+          status,
+          isValidated: existingProgress.isValidated ?? false,
+          career: existingProgress.career || career,
+          createdAt: existingProgress.createdAt || serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        }, { merge: true });
+      }
 
       // Update local state optimistically
       setUserProgress(prev =>
         prev.map(p =>
           p.id === existingProgress.id
-            ? { ...p, status, updatedAt: new Date().toISOString() }
+            ? { ...p, id: progressDocId, status, updatedAt: new Date().toISOString() }
             : p
         )
       );
     } else {
       // Create new progress record
-      const newProgressRef = doc(collection(db, 'user_progress'));
+      const newProgressRef = doc(
+        db,
+        'users',
+        user.uid,
+        'progress',
+        getUserProgressDocId(career, subjectCode)
+      );
       const newProgress = {
         userId: user.uid,
         subjectCode,
@@ -242,12 +293,31 @@ export function usePensum() {
     const batch = writeBatch(db);
 
     if (existingProgress) {
-      const progressRef = doc(db, 'user_progress', existingProgress.id);
-      batch.update(progressRef, {
-        isValidated,
-        status: isValidated ? 'completed' : existingProgress.status,
-        updatedAt: serverTimestamp(),
-      });
+      const progressDocId = getUserProgressDocId(existingProgress.career || career, subjectCode);
+      const progressRef = doc(
+        db,
+        'users',
+        user.uid,
+        'progress',
+        progressDocId
+      );
+      if (existingProgress.id === progressDocId) {
+        batch.update(progressRef, {
+          isValidated,
+          status: isValidated ? 'completed' : existingProgress.status,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        batch.set(progressRef, {
+          userId: user.uid,
+          subjectCode,
+          status: isValidated ? 'completed' : existingProgress.status,
+          isValidated,
+          career: existingProgress.career || career,
+          createdAt: existingProgress.createdAt || serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        }, { merge: true });
+      }
 
       // Update local state optimistically
       setUserProgress(prev =>
@@ -255,6 +325,7 @@ export function usePensum() {
           p.id === existingProgress.id
             ? {
                 ...p,
+                id: progressDocId,
                 isValidated,
                 status: isValidated ? 'completed' : p.status,
                 updatedAt: new Date().toISOString()
@@ -264,7 +335,13 @@ export function usePensum() {
       );
     } else if (isValidated) {
       // Create new validated progress record
-      const newProgressRef = doc(collection(db, 'user_progress'));
+      const newProgressRef = doc(
+        db,
+        'users',
+        user.uid,
+        'progress',
+        getUserProgressDocId(career, subjectCode)
+      );
       const newProgress = {
         userId: user.uid,
         subjectCode,
