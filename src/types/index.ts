@@ -54,4 +54,5 @@ export interface ProgressStats {
   pendingCredits: number;
   progressPercentage: number;
   estimatedSemestersRemaining: number;
+  estimatedSemestersRemainingPrecise: number;
 }

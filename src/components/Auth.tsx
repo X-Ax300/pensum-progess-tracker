@@ -3,6 +3,8 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signInWithPopup,
+  sendEmailVerification,
+  signOut,
 } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { auth, db, googleProvider } from '../lib/firebase';
@@ -20,6 +22,7 @@ export function Auth({ onAuthSuccess }: AuthProps) {
   const [career, setCareer] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [infoMessage, setInfoMessage] = useState<string | null>(null);
 
   async function ensureUserProfile(userId: string, defaultCareer = '') {
     const profileRef = doc(db, 'userProfiles', userId);
@@ -71,6 +74,9 @@ export function Auth({ onAuthSuccess }: AuthProps) {
     if (message.includes('cancelled-popup-request')) {
       return 'Ya hay una solicitud de acceso con Google en progreso';
     }
+    if (message.includes('too-many-requests')) {
+      return 'Demasiados intentos. Intenta de nuevo más tarde';
+    }
     return message;
   }
 
@@ -78,13 +84,25 @@ export function Auth({ onAuthSuccess }: AuthProps) {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setInfoMessage(null);
 
     try {
       if (isLogin) {
-        await signInWithEmailAndPassword(auth, email, password);
+        const userCredential = await signInWithEmailAndPassword(auth, email, password);
+        if (!userCredential.user.emailVerified) {
+          await signOut(auth);
+          setError('Debes verificar tu correo electrónico antes de iniciar sesión.');
+          return;
+        }
+        await ensureUserProfile(userCredential.user.uid);
       } else {
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-        await ensureUserProfile(userCredential.user.uid, career);
+        await sendEmailVerification(userCredential.user);
+        await signOut(auth);
+        setInfoMessage('Te enviamos un correo de verificación. Valídalo antes de iniciar sesión.');
+        setIsLogin(true);
+        setPassword('');
+        return;
       }
       onAuthSuccess();
     } catch (err) {
@@ -97,6 +115,7 @@ export function Auth({ onAuthSuccess }: AuthProps) {
   async function handleGoogleLogin() {
     setLoading(true);
     setError(null);
+    setInfoMessage(null);
 
     try {
       const userCredential = await signInWithPopup(auth, googleProvider);
@@ -186,6 +205,12 @@ export function Auth({ onAuthSuccess }: AuthProps) {
           {error && (
             <div className="bg-red-50 border border-red-200 rounded-lg p-3">
               <p className="text-sm text-red-700">{error}</p>
+            </div>
+          )}
+
+          {infoMessage && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+              <p className="text-sm text-blue-700">{infoMessage}</p>
             </div>
           )}
 

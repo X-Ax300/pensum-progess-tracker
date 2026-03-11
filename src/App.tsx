@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from './lib/firebase';
 import { Auth } from './components/Auth';
 import { Dashboard } from './components/Dashboard';
@@ -10,7 +10,15 @@ function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      const isPasswordUser = currentUser?.providerData.some(provider => provider.providerId === 'password');
+      if (currentUser && isPasswordUser && !currentUser.emailVerified) {
+        await signOut(auth);
+        setUser(null);
+        setLoading(false);
+        return;
+      }
+
       setUser(currentUser);
       setLoading(false);
     });
