@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { doc, setDoc } from 'firebase/firestore';
+import { updatePassword } from 'firebase/auth';
 import { auth, db } from '../lib/firebase';
 import { UserProfile } from '../types';
 import { useTheme } from '../contexts/ThemeContext';
@@ -16,12 +17,31 @@ export function Profile({ userProfile, onProfileUpdate, onClose }: ProfileProps)
   const [career, setCareer] = useState(userProfile?.career || '');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const isPasswordUser = auth.currentUser?.providerData.some(provider => provider.providerId === 'password') ?? false;
 
   const handleSave = async () => {
     if (!auth.currentUser) return;
 
     setLoading(true);
     setError(null);
+    setSuccessMessage(null);
+
+    if (newPassword) {
+      if (newPassword.length < 6) {
+        setError('La nueva contraseña debe tener al menos 6 caracteres');
+        setLoading(false);
+        return;
+      }
+
+      if (newPassword !== confirmPassword) {
+        setError('Las contraseñas nuevas no coinciden');
+        setLoading(false);
+        return;
+      }
+    }
 
     try {
       const profileRef = doc(db, 'userProfiles', auth.currentUser.uid);
@@ -31,10 +51,23 @@ export function Profile({ userProfile, onProfileUpdate, onClose }: ProfileProps)
         theme,
         updatedAt: new Date().toISOString(),
       }, { merge: true });
+
+      if (newPassword) {
+        await updatePassword(auth.currentUser, newPassword);
+      }
+
+      setSuccessMessage(newPassword ? 'Perfil y contraseña actualizados' : 'Perfil actualizado');
+      setNewPassword('');
+      setConfirmPassword('');
       onProfileUpdate();
-      onClose();
-    } catch {
-      setError('Error al guardar cambios');
+      setTimeout(() => onClose(), 600);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '';
+      if (message.includes('requires-recent-login')) {
+        setError('Por seguridad, vuelve a iniciar sesión antes de cambiar tu contraseña');
+      } else {
+        setError('Error al guardar cambios');
+      }
     } finally {
       setLoading(false);
     }
@@ -120,6 +153,46 @@ export function Profile({ userProfile, onProfileUpdate, onClose }: ProfileProps)
             <div className="bg-red-50 dark:bg-red-900 border border-red-200 dark:border-red-700 rounded-lg p-3">
               <p className="text-sm text-red-700 dark:text-red-300">{error}</p>
             </div>
+          )}
+
+          {successMessage && (
+            <div className="bg-green-50 dark:bg-green-900 border border-green-200 dark:border-green-700 rounded-lg p-3">
+              <p className="text-sm text-green-700 dark:text-green-300">{successMessage}</p>
+            </div>
+          )}
+
+          {isPasswordUser && (
+            <>
+              <div>
+                <label htmlFor="new-password" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Nueva contraseña
+                </label>
+                <input
+                  id="new-password"
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  minLength={6}
+                  className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white transition-all duration-200"
+                  placeholder="Deja vacío si no quieres cambiarla"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="confirm-password" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Confirmar nueva contraseña
+                </label>
+                <input
+                  id="confirm-password"
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  minLength={6}
+                  className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white transition-all duration-200"
+                  placeholder="Repite la nueva contraseña"
+                />
+              </div>
+            </>
           )}
 
           <div className="flex gap-3 pt-4">
