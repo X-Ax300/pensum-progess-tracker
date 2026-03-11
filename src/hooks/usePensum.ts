@@ -58,8 +58,7 @@ export function usePensum() {
             } as UserProfile;
           }
           setUserProfile(profileData);
-        } catch (profileErr) {
-          console.warn('Warning loading user profile:', profileErr);
+        } catch {
           setUserProfile(null);
         }
       }
@@ -73,7 +72,6 @@ export function usePensum() {
           ].map(p => p.catch(err => {
             // Si falla por permisos, retorna snapshot vacío
             if (err instanceof Error && err.message.includes('Missing or insufficient permissions')) {
-              console.warn(`No permission to access career data: ${profileData.career}`);
               return { docs: [], empty: true } as any;
             }
             throw err;
@@ -91,8 +89,7 @@ export function usePensum() {
 
           setSubjects(subjectsData);
           setPrerequisites(prerequisitesData);
-        } catch (err) {
-          console.warn('Warning loading career data:', err);
+        } catch {
           setSubjects([]);
           setPrerequisites([]);
         }
@@ -137,8 +134,7 @@ export function usePensum() {
 
           setUserProgress(progressData);
           setCurrentUid(user.uid);
-        } catch (progressErr) {
-          console.warn('Warning loading user progress:', progressErr);
+        } catch {
           setUserProgress([]);
           setCurrentUid(user.uid);
         }
@@ -149,7 +145,6 @@ export function usePensum() {
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Failed to load data';
       setError(`${errorMsg}. Por favor actualiza las Security Rules de Firestore.`);
-      console.error('Error loading pensum data:', err);
     } finally {
       setLoading(false);
     }
@@ -385,14 +380,15 @@ export function usePensum() {
 
     return subjects.map(subject => {
       const progress = progressMap.get(subject.code);
-      const status = progress?.status || 'pending';
       const isValidated = progress?.isValidated || false;
+      const status = isValidated ? 'completed' : (progress?.status || 'pending');
 
       const subjectPrereqs = prereqMap.get(subject.code) || [];
 
       const isLocked = subjectPrereqs.some(prereqCode => {
         const prereqProgress = progressMap.get(prereqCode);
-        return !prereqProgress?.status || prereqProgress.status !== 'completed';
+        const prereqCompleted = prereqProgress?.isValidated || prereqProgress?.status === 'completed';
+        return !prereqCompleted;
       });
 
       return {
@@ -406,22 +402,17 @@ export function usePensum() {
   }, [subjects, prerequisites, userProgress]);
 
   const stats = useMemo((): ProgressStats => {
-    // Create maps for faster lookups
-    const progressMap = new Map(userProgress.map(p => [p.subjectCode, p]));
-    const subjectMap = new Map(subjects.map(s => [s.code, s]));
-
     let completedSubjects = 0;
     let inProgressSubjects = 0;
     let pendingSubjects = 0;
     let completedCredits = 0;
     let inProgressCredits = 0;
+    const totalSemesters = new Set<number>();
 
-    // Single pass through subjectsWithProgress
     subjectsWithProgress.forEach(subject => {
-      const progress = progressMap.get(subject.code);
-      const status = progress?.status || 'pending';
+      totalSemesters.add(subject.semester);
 
-      switch (status) {
+      switch (subject.status) {
         case 'completed':
           completedSubjects++;
           completedCredits += subject.credits;
@@ -435,17 +426,24 @@ export function usePensum() {
       }
     });
 
-    const totalCredits = subjects.reduce((sum, s) => sum + s.credits, 0);
+    const totalCredits = subjectsWithProgress.reduce((sum, subject) => sum + subject.credits, 0);
     const pendingCredits = totalCredits - completedCredits - inProgressCredits;
-
-    const progressPercentage = totalCredits > 0 ? Math.round((completedCredits / totalCredits) * 100) : 0;
-
-    const averageCreditsPerSemester = 15;
-    const remainingCredits = totalCredits - completedCredits;
-    const estimatedSemestersRemaining = Math.ceil(remainingCredits / averageCreditsPerSemester);
+    const remainingCredits = Math.max(totalCredits - completedCredits, 0);
+    const progressBase = completedCredits + remainingCredits;
+    const progressPercentage = progressBase > 0
+      ? Math.round((completedCredits / progressBase) * 100)
+      : 0;
+    const totalSemesterCount = totalSemesters.size;
+    const averageCreditsPerSemester = totalSemesterCount > 0 ? totalCredits / totalSemesterCount : 0;
+    const estimatedSemestersRemainingPrecise = averageCreditsPerSemester > 0
+      ? Number((remainingCredits / averageCreditsPerSemester).toFixed(1))
+      : 0;
+    const estimatedSemestersRemaining = averageCreditsPerSemester > 0
+      ? Math.ceil(estimatedSemestersRemainingPrecise)
+      : 0;
 
     return {
-      totalSubjects: subjects.length,
+      totalSubjects: subjectsWithProgress.length,
       completedSubjects,
       inProgressSubjects,
       pendingSubjects,
@@ -455,8 +453,9 @@ export function usePensum() {
       pendingCredits,
       progressPercentage,
       estimatedSemestersRemaining,
+      estimatedSemestersRemainingPrecise,
     };
-  }, [subjectsWithProgress, subjects, userProgress]);
+  }, [subjectsWithProgress]);
 
   // Wrapper functions for compatibility
   const getSubjectsWithProgress = useCallback(() => subjectsWithProgress, [subjectsWithProgress]);

@@ -1,6 +1,6 @@
 // src/components/UploadPensum.tsx
 import { useState, useEffect } from 'react';
-import { collection, addDoc, doc, getDoc, writeBatch } from 'firebase/firestore';
+import { collection, doc, getDoc, setDoc, writeBatch } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 // we only need getDocument; import path has no types so ignore TS
 // setup worker for pdfjs to avoid runtime error
@@ -20,14 +20,48 @@ interface ParsedSubject {
   prereqs: string[];
 }
 
-interface UploadPensumProps {
-  readonly onUpload?: (career: string) => Promise<void> | void;
+interface PdfTextItem {
+  str: string;
+  x: number;
+  y: number;
 }
 
-export function UploadPensum({ onUpload }: UploadPensumProps) {
+interface PdfRow {
+  y: number;
+  items: PdfTextItem[];
+  text: string;
+}
+
+type SectionLayout = 'standard' | 'plan' | 'software';
+
+interface DraftSubject {
+  code: string;
+  name: string;
+  credits: number;
+  prereqs: string[];
+  semester: number;
+  rowIndex: number;
+  hasInlineName: boolean;
+}
+
+const SUBJECT_CODE_REGEX = /^[A-ZÑ&-]+-\d{3}(?:-[A-Z])?$/;
+const SUBJECT_CODE_MATCH_REGEX = /[A-ZÑ&-]+-\d{3}(?:-[A-Z])?/g;
+
+interface UploadPensumProps {
+  readonly onUpload?: (career: string) => Promise<void> | void;
+  readonly userCareer?: string;
+  readonly hasPensumLoaded?: boolean;
+}
+
+export function UploadPensum({
+  onUpload,
+  userCareer,
+  hasPensumLoaded = false,
+}: UploadPensumProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [career, setCareer] = useState('');
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [career, setCareer] = useState(userCareer || '');
   const [pensumExists, setPensumExists] = useState(false);
   const [checkingPensum, setCheckingPensum] = useState(false);
   const [user, setUser] = useState(auth.currentUser);
@@ -39,6 +73,10 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
     });
     return unsub;
   }, []);
+
+  useEffect(() => {
+    setCareer(userCareer || '');
+  }, [userCareer]);
 
   // Check if pensum already exists
   useEffect(() => {
@@ -53,8 +91,7 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
         const pensumRef = doc(db, 'pensum', career);
         const pensumDoc = await getDoc(pensumRef);
         setPensumExists(pensumDoc.exists());
-      } catch (err) {
-        console.error('Error checking pensum:', err);
+      } catch {
         setPensumExists(false);
       } finally {
         setCheckingPensum(false);
@@ -66,102 +103,342 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
 
   // helpers --------------------------------------------------------------
 
-  const extractTextFromPdf = async (file: File): Promise<string> => {
+  const extractRowsFromPdf = async (file: File): Promise<PdfRow[]> => {
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await getDocument({ data: arrayBuffer }).promise;
-    let text = '';
+    const rows: PdfRow[] = [];
+
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      text += content.items.map((it: any) => it.str).join(' ') + '\n';
+
+      const pageItems = content.items
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map((item: any) => ({
+          str: String(item.str || '').trim(),
+          x: Number(item.transform?.[4] || 0),
+          y: Number(item.transform?.[5] || 0),
+        }))
+        .filter(item => item.str);
+
+      const pageRows: Array<{ y: number; items: PdfTextItem[] }> = [];
+      pageItems.forEach(item => {
+        const existingRow = pageRows.find(row => Math.abs(row.y - item.y) <= 3);
+        if (existingRow) {
+          existingRow.items.push(item);
+        } else {
+          pageRows.push({ y: item.y, items: [item] });
+        }
+      });
+
+      pageRows
+        .sort((a, b) => b.y - a.y)
+        .forEach(row => {
+          row.items.sort((a, b) => a.x - b.x);
+          rows.push({
+            y: row.y,
+            items: row.items,
+            text: row.items.map(item => item.str).join(' ').replace(/\s+/g, ' ').trim(),
+          });
+        });
     }
-    return text;
+
+    return rows;
   };
 
-  const parseSubjectsFromText = (text: string): ParsedSubject[] => {
-    const markers = collectSemesterMarkers(text);
-    const clean = text
-      .replaceAll(/CLAVE\s+NOMBRE\s+CR\s+PRE-REQ\./g, '')
-      .replaceAll(/(PRIMER|SEGUNDO|TERCER|CUARTO|QUINTO|SEXTO|(?:SEPTIMO|SÉPTIMO)|OCTAVO|NOVENO|DÉCIMO|UNDÉCIMO|DUODÉCIMO)\s+CUATRIMESTRE/gi, '')
-      .replaceAll(/INGENIERÍA\s+de\s+Software/gi, '');
-    return buildSubjectsFromClean(clean, markers);
+  const normalizeText = (value: string) =>
+    value
+      .toUpperCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\./g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const getSemesterNumber = (text: string) => {
+    const normalized = normalizeText(text);
+    const mappings: Array<[RegExp, number]> = [
+      [/\bDECIMO SEXTO\b/, 16],
+      [/\bDECIMO QUINTO\b/, 15],
+      [/\bDECIMO CUARTO\b/, 14],
+      [/\bDECIMO TERCER\b/, 13],
+      [/\bDECIMO SEGUNDO\b/, 12],
+      [/\bDECIMO PRIMER\b/, 11],
+      [/\bUNDECIMO\b/, 11],
+      [/\bDUODECIMO\b/, 12],
+      [/\bDECIMO\b/, 10],
+      [/\bPRIMER\b/, 1],
+      [/\bSEGUNDO\b/, 2],
+      [/\bTERCER\b/, 3],
+      [/\bCUARTO\b/, 4],
+      [/\bQUINTO\b/, 5],
+      [/\bSEXTO\b/, 6],
+      [/\bSEPTIMO\b/, 7],
+      [/\bOCTAVO\b/, 8],
+      [/\bNOVENO\b/, 9],
+    ];
+
+    for (const [pattern, value] of mappings) {
+      if (pattern.test(normalized)) return value;
+    }
+
+    const numericMatch = normalized.match(/(\d{1,2})(?:MO|VO|ER)?\s+CUAT/);
+    return numericMatch ? Number.parseInt(numericMatch[1], 10) : null;
   };
 
-  const collectSemesterMarkers = (text: string) => {
-    const markerRegex = /(PRIMER|SEGUNDO|TERCER|CUARTO|QUINTO|SEXTO|(?:SEPTIMO|SÉPTIMO)|OCTAVO|NOVENO|DÉCIMO|UNDÉCIMO|DUODÉCIMO)\s+CUATRIMESTRE/gi;
-    const semesterMap: Record<string, number> = {
-      PRIMER: 1,
-      SEGUNDO: 2,
-      TERCER: 3,
-      CUARTO: 4,
-      QUINTO: 5,
-      SEXTO: 6,
-      SEPTIMO: 7,
-      SÉPTIMO: 7,
-      OCTAVO: 8,
-      NOVENO: 9,
-      DÉCIMO: 10,
-      UNDÉCIMO: 11,
-      DUODÉCIMO: 12,
+  const isSemesterHeader = (text: string) => {
+    const normalized = normalizeText(text);
+    return (
+      normalized.includes('CUATRIMESTRE') ||
+      normalized.includes('TRIMESTRE') ||
+      normalized.includes('PERIODO CUATRIMESTRAL')
+    );
+  };
+
+  const detectSectionLayout = (row: PdfRow): SectionLayout | null => {
+    const normalized = normalizeText(row.text);
+    if ((normalized.includes('HT') || normalized.includes('HP')) && normalized.includes('PRE REQ')) {
+      return 'software';
+    }
+    if (normalized.includes('CODIGO') && normalized.includes('CREDITOS')) {
+      return 'plan';
+    }
+    if (normalized.includes('CLAVE') && (normalized.includes('NOMBRE') || normalized.includes('ASIGNATURA'))) {
+      return 'standard';
+    }
+    return null;
+  };
+
+  const isIgnorableRow = (row: PdfRow) => {
+    const normalized = normalizeText(row.text);
+    return (
+      !row.text ||
+      normalized.startsWith('CLAVE ') ||
+      normalized.startsWith('CODIGO ') ||
+      normalized.startsWith('SUBTOTAL') ||
+      normalized.startsWith('TOTAL ') ||
+      normalized.includes('HORAS DE PASANTIA') ||
+      normalized.includes('SERVICIO SOCIAL') ||
+      normalized.includes('BLOQUES DE OPTATIVAS') ||
+      normalized.includes('REQUISITOS DE EGRESO') ||
+      normalized.includes('GRADO ACADEMICO') ||
+      normalized.includes('DURACION ') ||
+      normalized.startsWith('OPTATIVAS ') ||
+      normalized.startsWith('ELECTIVA') ||
+      normalized.startsWith('OPTATIVA') ||
+      normalized.startsWith('ESTE PLAN DE ESTUDIO') ||
+      normalized.startsWith('EN ADICION ') ||
+      normalized.startsWith('DE ACUERDO ') ||
+      normalized.startsWith('* EL CORREQUISITO') ||
+      normalized.includes('AUTOPISTA 30 DE MAYO') ||
+      normalized.includes('WWW UNICARIBE EDU DO') ||
+      normalized.includes('REPUBLICA DOMINICANA')
+    );
+  };
+
+  const getRowCode = (row: PdfRow) =>
+    row.items.find(item => SUBJECT_CODE_REGEX.test(item.str) && item.x < 130)?.str || null;
+
+  const getRowName = (row: PdfRow, layout: SectionLayout) => {
+    if (layout === 'software') {
+      return row.items
+        .filter(item => item.x >= 120 && item.x < 345)
+        .map(item => item.str)
+        .join(' ')
+        .trim();
+    }
+
+    if (layout === 'plan') {
+      return row.items
+        .filter(item => item.x >= 80 && item.x < 170)
+        .map(item => item.str)
+        .join(' ')
+        .trim();
+    }
+
+    return row.items
+      .filter(item => item.x >= 120 && item.x < 455)
+      .map(item => item.str)
+      .join(' ')
+      .trim();
+  };
+
+  const getRowCredits = (row: PdfRow, layout: SectionLayout) => {
+    const numericItems = row.items.filter(item => /^\d+$/.test(item.str));
+
+    if (layout === 'software') {
+      return numericItems.find(item => item.x >= 440 && item.x < 470)?.str || '0';
+    }
+
+    if (layout === 'plan') {
+      return numericItems.find(item => item.x >= 165 && item.x < 190)?.str || '0';
+    }
+
+    return numericItems.find(item => item.x >= 455 && item.x < 480)?.str || '0';
+  };
+
+  const getRowPrereqs = (row: PdfRow, layout: SectionLayout) => {
+    const rawText = layout === 'software'
+      ? row.items.filter(item => item.x >= 470).map(item => item.str).join(' ')
+      : layout === 'plan'
+        ? row.items.filter(item => item.x >= 190 && item.x < 255).map(item => item.str).join(' ')
+        : row.items.filter(item => item.x >= 480).map(item => item.str).join(' ');
+
+    return rawText.match(SUBJECT_CODE_MATCH_REGEX) || [];
+  };
+
+  const isLikelyNameContinuationRow = (row: PdfRow, layout: SectionLayout) => {
+    if (row.items.length === 0) return false;
+
+    if (layout === 'software') {
+      return row.items.every(item => (item.x >= 120 && item.x < 345) || item.x >= 470);
+    }
+
+    if (layout === 'plan') {
+      return row.items.every(item => (item.x >= 80 && item.x < 170) || item.x >= 190);
+    }
+
+    return row.items.every(item => item.x >= 120 && item.x < 455) && !/[a-z]/.test(row.text);
+  };
+
+  const parseSectionSubjects = (rows: PdfRow[], semester: number, layout: SectionLayout): ParsedSubject[] => {
+    const draftSubjects: DraftSubject[] = [];
+
+    rows.forEach((row, rowIndex) => {
+      if (isIgnorableRow(row) || isSemesterHeader(row.text)) return;
+
+      const code = getRowCode(row);
+      if (!code) return;
+
+      const name = getRowName(row, layout);
+      draftSubjects.push({
+        code,
+        name,
+        credits: Number.parseInt(getRowCredits(row, layout), 10) || 0,
+        prereqs: getRowPrereqs(row, layout),
+        semester,
+        rowIndex,
+        hasInlineName: Boolean(name),
+      });
+    });
+
+    rows.forEach((row, rowIndex) => {
+      if (isIgnorableRow(row) || isSemesterHeader(row.text) || getRowCode(row)) return;
+
+      const extraName = getRowName(row, layout);
+      const extraCredits = Number.parseInt(getRowCredits(row, layout), 10) || 0;
+      const extraPrereqs = getRowPrereqs(row, layout);
+      const normalizedExtraName = normalizeText(extraName);
+      const hasNameContinuation = extraName && isLikelyNameContinuationRow(row, layout);
+      if (!extraName && extraCredits === 0 && extraPrereqs.length === 0) {
+        return;
+      }
+
+      const previous = [...draftSubjects].reverse().find(subject => subject.rowIndex < rowIndex);
+      const next = draftSubjects.find(subject => subject.rowIndex > rowIndex);
+      const target = hasNameContinuation && next && !next.hasInlineName ? next : previous;
+
+      if (!target) return;
+
+      if (
+        hasNameContinuation &&
+        !/^\d+$/.test(extraName) &&
+        !normalizedExtraName.startsWith('ELECTIVA') &&
+        !normalizedExtraName.startsWith('OPTATIVA')
+      ) {
+        target.name = target.hasInlineName
+          ? `${target.name} ${extraName}`.replace(/\s+/g, ' ').trim()
+          : `${extraName} ${target.name}`.replace(/\s+/g, ' ').trim();
+        target.hasInlineName = true;
+      }
+
+      if (target.credits === 0 && extraCredits > 0) {
+        target.credits = extraCredits;
+      }
+
+      if (extraPrereqs.length > 0 && !hasNameContinuation) {
+        target.prereqs = Array.from(new Set([...target.prereqs, ...extraPrereqs]));
+      }
+    });
+
+    return draftSubjects
+      .filter(subject => subject.name)
+      .map(({ code, name, credits, prereqs, semester: subjectSemester }) => ({
+        code,
+        name: name.replace(/\s+/g, ' ').trim(),
+        credits,
+        prereqs,
+        semester: subjectSemester,
+      }));
+  };
+
+  const parseSubjectsFromRows = (rows: PdfRow[]): ParsedSubject[] => {
+    const sections: Array<{ semester: number; layout: SectionLayout; rows: PdfRow[] }> = [];
+    let currentSemester = 0;
+    let currentLayout: SectionLayout = 'standard';
+    let currentRows: PdfRow[] = [];
+
+    const flushSection = () => {
+      if (currentSemester === 0 || currentRows.length === 0) return;
+      sections.push({ semester: currentSemester, layout: currentLayout, rows: currentRows });
+      currentRows = [];
     };
 
-    const markers: Array<{ pos: number; semester: number }> = [];
-    let m;
-    while ((m = markerRegex.exec(text)) !== null) {
-      const ord = m[1].toUpperCase().replace('É', 'E');
-      markers.push({ pos: m.index, semester: semesterMap[ord] || 0 });
-    }
-    return markers;
-  };
-
-  const buildSubjectsFromClean = (
-    clean: string,
-    markers: Array<{ pos: number; semester: number }>
-  ): ParsedSubject[] => {
-    const tokens = clean
-      .split(/\s{2,}/g)
-      .map((t: string) => t.trim())
-      .filter(Boolean);
-
-    const subjects: ParsedSubject[] = [];
-    let lastSearchIdx = 0;
-
-    for (let i = 0; i < tokens.length; ) {
-      const code = tokens[i];
-      if (/^[A-ZÑ&-]+-\d{3}$/.test(code)) {
-        const name = tokens[i + 1] || '';
-        const credits = Number.parseInt(tokens[i + 2] || '0', 10);
-        const prereqRaw = tokens[i + 3] || '';
-        const prereqs = prereqRaw.match(/[A-ZÑ&-]+-\d{3}/g) || [];
-
-        const pos = clean.indexOf(code, lastSearchIdx);
-        if (pos !== -1) lastSearchIdx = pos + code.length;
-
-        let semester = 0;
-        for (const mk of markers) {
-          if (mk.pos <= pos) semester = mk.semester;
-          else break;
-        }
-
-        subjects.push({ code, name, credits, semester, prereqs });
-        i += 4;
-      } else {
-        i++;
+    rows.forEach(row => {
+      const normalizedRow = normalizeText(row.text);
+      if (
+        normalizedRow.includes('BLOQUES DE OPTATIVAS') ||
+        normalizedRow.includes('REQUISITOS DE EGRESO')
+      ) {
+        flushSection();
+        currentSemester = 0;
+        return;
       }
-    }
 
-    return subjects;
+      if (normalizedRow.startsWith('SUBTOTAL')) {
+        flushSection();
+        return;
+      }
+
+      if (isSemesterHeader(row.text)) {
+        const semester = getSemesterNumber(row.text);
+        if (semester) {
+          flushSection();
+          currentSemester = semester;
+        }
+        return;
+      }
+
+      const layout = detectSectionLayout(row);
+      if (layout) {
+        currentLayout = layout;
+        return;
+      }
+
+      if (currentSemester > 0) {
+        currentRows.push(row);
+      }
+    });
+
+    flushSection();
+
+    const subjectsByCode = new Map<string, ParsedSubject>();
+    sections.forEach(section => {
+      parseSectionSubjects(section.rows, section.semester, section.layout).forEach(subject => {
+        subjectsByCode.set(subject.code, subject);
+      });
+    });
+
+    return Array.from(subjectsByCode.values())
+      .sort((a, b) => a.semester - b.semester || a.code.localeCompare(b.code));
   };
 
   const saveSubjects = async (subjects: ParsedSubject[], career: string) => {
     if (!user) throw new Error('Usuario no autenticado');
 
-    const batch = writeBatch(db);
-
     // Create pensum metadata document
     const pensumRef = doc(db, 'pensum', career);
-    batch.set(pensumRef, {
+    await setDoc(pensumRef, {
       careerName: career,
       uploadedBy: user.uid,
       uploadedAt: new Date(),
@@ -170,10 +447,12 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
       createdAt: new Date(),
     });
 
+    const batch = writeBatch(db);
+
     // Add subjects to subcollection
     const subjectsRef = collection(db, 'pensum', career, 'subjects');
     for (const s of subjects) {
-      const docRef = doc(subjectsRef);
+      const docRef = doc(subjectsRef, s.code);
       batch.set(docRef, {
         code: s.code,
         name: s.name,
@@ -189,7 +468,7 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
     const prereqRef = collection(db, 'pensum', career, 'prerequisites');
     for (const s of subjects) {
       for (const dep of s.prereqs) {
-        const docRef = doc(prereqRef);
+        const docRef = doc(prereqRef, `${s.code}__${dep}`);
         batch.set(docRef, {
           subjectCode: s.code,
           prerequisiteCode: dep,
@@ -212,6 +491,11 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
       return;
     }
 
+    if (hasPensumLoaded) {
+      setError('Ya tienes un pensum cargado en tu cuenta. No puedes cargar otro.');
+      return;
+    }
+
     if (pensumExists) {
       setError('El pensum de esta carrera ya existe. No se puede sobreescribir.');
       return;
@@ -219,12 +503,16 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
 
     setLoading(true);
     setError(null);
+    setSuccessMessage(null);
 
     try {
-      const text = await extractTextFromPdf(file);
-      const subjects = parseSubjectsFromText(text);
+      const rows = await extractRowsFromPdf(file);
+      const subjects = parseSubjectsFromRows(rows);
+      if (subjects.length === 0) {
+        throw new Error('No subjects parsed from PDF');
+      }
       await saveSubjects(subjects, career);
-      alert(`${subjects.length} materias importadas para ${career}`);
+      setSuccessMessage(`${subjects.length} materias importadas para ${career}.`);
       if (onUpload) {
         // refresh parent data after import - only clear cache for this career
         await Promise.resolve(onUpload(career));
@@ -233,8 +521,12 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
       setCareer('');
       setPensumExists(false);
     } catch (err) {
-      console.error(err);
-      setError('No se pudo leer el PDF o guardar los datos');
+      const message = err instanceof Error ? err.message : '';
+      if (message.includes('Missing or insufficient permissions')) {
+        setError('No tienes permiso para subir este pensum. Verifica las reglas de Firestore o que la carrera no exista ya.');
+      } else {
+        setError('No se pudo leer el PDF o guardar los datos');
+      }
     } finally {
       setLoading(false);
     }
@@ -261,6 +553,7 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
             id="career-select"
             value={career}
             onChange={(e) => setCareer(e.target.value)}
+            disabled={Boolean(userCareer) || hasPensumLoaded}
             className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white transition"
           >
             <option value="">Selecciona la carrera del pensum</option>
@@ -274,6 +567,11 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
             <option value="Administración de Empresas">Administración de Empresas</option>
             <option value="Otra">Otra</option>
           </select>
+          {userCareer && (
+            <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+              La carga usa la carrera de tu perfil: {userCareer}.
+            </p>
+          )}
         </div>
 
         {/* Upload Area */}
@@ -281,6 +579,21 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
           <label htmlFor="pdf-upload" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
             Archivo PDF
           </label>
+          {hasPensumLoaded && (
+            <div className="mb-4 bg-yellow-50 dark:bg-yellow-900 border border-yellow-200 dark:border-yellow-700 rounded-lg p-4">
+              <div className="flex items-center gap-3">
+                <Lock className="w-5 h-5 text-yellow-600 dark:text-yellow-400" />
+                <div>
+                  <p className="font-medium text-yellow-800 dark:text-yellow-200">
+                    Ya tienes un pensum cargado
+                  </p>
+                  <p className="text-sm text-yellow-700 dark:text-yellow-300">
+                    Esta cuenta no puede subir otro pensum mientras ya tenga uno asociado.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
           {pensumExists && !checkingPensum && (
             <div className="mb-4 bg-yellow-50 dark:bg-yellow-900 border border-yellow-200 dark:border-yellow-700 rounded-lg p-4">
               <div className="flex items-center gap-3">
@@ -297,7 +610,7 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
             </div>
           )}
           <div className={`border-2 border-dashed rounded-lg p-6 text-center transition ${
-            pensumExists && !checkingPensum
+            (pensumExists && !checkingPensum) || hasPensumLoaded
               ? 'border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800'
               : 'border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500'
           }`}>
@@ -305,21 +618,27 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
               type="file"
               accept="application/pdf"
               onChange={handleFile}
-              disabled={loading || !career || pensumExists || checkingPensum}
+              disabled={loading || !career || pensumExists || checkingPensum || hasPensumLoaded}
               className="hidden"
               id="pdf-upload"
             />
             <label
               htmlFor="pdf-upload"
               className={`cursor-pointer ${
-                loading || !career || pensumExists || checkingPensum ? 'cursor-not-allowed opacity-50' : ''
+                loading || !career || pensumExists || checkingPensum || hasPensumLoaded ? 'cursor-not-allowed opacity-50' : ''
               }`}
             >
               <div className="flex flex-col items-center gap-3">
                 <FileText className="w-12 h-12 text-gray-400 dark:text-gray-500" />
                 <div>
                   <p className="text-lg font-medium text-gray-900 dark:text-white">
-                    {checkingPensum ? 'Verificando pensum...' : loading ? 'Procesando...' : 'Haz clic para seleccionar PDF'}
+                    {hasPensumLoaded
+                      ? 'Carga bloqueada'
+                      : checkingPensum
+                        ? 'Verificando pensum...'
+                        : loading
+                          ? 'Procesando...'
+                          : 'Haz clic para seleccionar PDF'}
                   </p>
                   <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
                     Solo archivos PDF • Máx. 10MB
@@ -351,8 +670,17 @@ export function UploadPensum({ onUpload }: UploadPensumProps) {
           </div>
         )}
 
+        {successMessage && !loading && (
+          <div className="bg-green-50 dark:bg-green-900 border border-green-200 dark:border-green-700 rounded-lg p-4">
+            <div className="flex items-center gap-3">
+              <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400" />
+              <p className="text-sm text-green-700 dark:text-green-300">{successMessage}</p>
+            </div>
+          </div>
+        )}
+
         {/* Success Message */}
-        {!loading && !error && career && (
+        {!loading && !error && !successMessage && career && (
           <div className="bg-green-50 dark:bg-green-900 border border-green-200 dark:border-green-700 rounded-lg p-4">
             <div className="flex items-center gap-3">
               <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400" />

@@ -6,7 +6,6 @@ import { Dashboard } from './components/Dashboard';
 import type { User } from 'firebase/auth';
 
 function App() {
-  console.log('env values', import.meta.env);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 

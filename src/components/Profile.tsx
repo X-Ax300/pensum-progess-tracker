@@ -33,9 +33,8 @@ export function Profile({ userProfile, onProfileUpdate, onClose }: ProfileProps)
       }, { merge: true });
       onProfileUpdate();
       onClose();
-    } catch (err) {
+    } catch {
       setError('Error al guardar cambios');
-      console.error(err);
     } finally {
       setLoading(false);
     }
