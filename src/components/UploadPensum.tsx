@@ -10,7 +10,8 @@ import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist/legacy/build/pdf.mj
 // Vite handles `?url` suffix to return a public path string
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 GlobalWorkerOptions.workerSrc = workerUrl;
-import { Upload, FileText, CheckCircle, AlertCircle, Lock } from 'lucide-react';
+import { Upload, FileText, CheckCircle, AlertCircle, Lock, LogOut } from 'lucide-react';
+import { signOut } from 'firebase/auth';
 
 interface ParsedSubject {
   code: string;
@@ -50,12 +51,14 @@ const SUBJECT_CODE_MATCH_REGEX = /[A-ZÑ&-]+-\d{3}(?:-[A-Z])?/g;
 interface UploadPensumProps {
   readonly onUpload?: (career: string) => Promise<void> | void;
   readonly userCareer?: string;
+  readonly userInstitution?: string;
   readonly hasPensumLoaded?: boolean;
 }
 
 export function UploadPensum({
   onUpload,
   userCareer,
+  userInstitution,
   hasPensumLoaded = false,
 }: UploadPensumProps) {
   const [loading, setLoading] = useState(false);
@@ -80,7 +83,7 @@ export function UploadPensum({
 
   // Check if pensum already exists
   useEffect(() => {
-    if (!career) {
+    if (!career || !userInstitution) {
       setPensumExists(false);
       return;
     }
@@ -88,7 +91,8 @@ export function UploadPensum({
     const checkPensumExists = async () => {
       setCheckingPensum(true);
       try {
-        const pensumRef = doc(db, 'pensum', career);
+        const pensumDocId = `${userInstitution}_${career}`;
+        const pensumRef = doc(db, 'pensum', pensumDocId);
         const pensumDoc = await getDoc(pensumRef);
         setPensumExists(pensumDoc.exists());
       } catch {
@@ -434,57 +438,146 @@ export function UploadPensum({
   };
 
   const saveSubjects = async (subjects: ParsedSubject[], career: string) => {
-    if (!user) throw new Error('Usuario no autenticado');
+    if (!user || !userInstitution) throw new Error('Usuario no autenticado o institución no especificada');
 
-    // Create pensum metadata document
-    const pensumRef = doc(db, 'pensum', career);
-    await setDoc(pensumRef, {
-      careerName: career,
-      uploadedBy: user.uid,
-      uploadedAt: new Date(),
-      totalSubjects: subjects.length,
-      description: `Pensum de ${career}`,
-      createdAt: new Date(),
-    });
-
-    const batch = writeBatch(db);
-
-    // Add subjects to subcollection
-    const subjectsRef = collection(db, 'pensum', career, 'subjects');
-    for (const s of subjects) {
-      const docRef = doc(subjectsRef, s.code);
-      batch.set(docRef, {
-        code: s.code,
-        name: s.name,
-        credits: s.credits,
-        semester: s.semester,
-        career,
-        isValidated: false,
-        createdAt: new Date(),
-      });
-    }
-
-    // Add prerequisites to subcollection
-    const prereqRef = collection(db, 'pensum', career, 'prerequisites');
-    for (const s of subjects) {
-      for (const dep of s.prereqs) {
-        const docRef = doc(prereqRef, `${s.code}__${dep}`);
-        batch.set(docRef, {
-          subjectCode: s.code,
-          prerequisiteCode: dep,
-          career,
+    const pensumDocId = `${userInstitution}_${career}`;
+    const pensumRef = doc(db, 'pensum', pensumDocId);
+    
+    // Crear documento de pensum con reintentos
+    let retries = 0;
+    const maxRetries = 3;
+    
+    while (retries < maxRetries) {
+      try {
+        console.log(`Creando documento de pensum (intento ${retries + 1}/${maxRetries}): ${pensumDocId}`);
+        await setDoc(pensumRef, {
+          careerName: career,
+          institution: userInstitution,
+          uploadedBy: user.uid,
+          uploadedAt: new Date(),
+          totalSubjects: subjects.length,
+          description: `Pensum de ${career} - ${userInstitution}`,
           createdAt: new Date(),
         });
+        console.log('Documento de pensum creado exitosamente');
+        break;
+      } catch (err) {
+        retries++;
+        console.error(`Error creando documento de pensum (intento ${retries}):`, err);
+        if (retries >= maxRetries) {
+          throw new Error(`Error al crear pensum después de ${maxRetries} intentos: ${err instanceof Error ? err.message : 'desconocido'}`);
+        }
+        // Esperar antes de reintentar (backoff exponencial)
+        await new Promise(resolve => setTimeout(resolve, 1000 * retries));
       }
     }
 
-    // Commit batch
-    await batch.commit();
+    // Pequeña pausa para asegurar que el documento se haya written
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Preparar todas las operaciones de escritura
+    const writeOperations: Array<() => Promise<void>> = [];
+
+    // Operaciones de materias (máximo 450 operaciones por batch para dejar espacio)
+    const subjectsRef = collection(db, 'pensum', pensumDocId, 'subjects');
+    const subjectBatches: Array<(batch: any) => void> = [];
+    
+    subjects.forEach((s) => {
+      subjectBatches.push((batch) => {
+        const docRef = doc(subjectsRef, s.code);
+        batch.set(docRef, {
+          code: s.code,
+          name: s.name,
+          credits: s.credits,
+          semester: s.semester,
+          career,
+          isValidated: false,
+          createdAt: new Date(),
+        });
+      });
+    });
+
+    // Operaciones de prerequisitos
+    const prereqRef = collection(db, 'pensum', pensumDocId, 'prerequisites');
+    const prereqBatches: Array<(batch: any) => void> = [];
+    
+    subjects.forEach((s) => {
+      s.prereqs.forEach((dep) => {
+        prereqBatches.push((batch) => {
+          const docRef = doc(prereqRef, `${s.code}__${dep}`);
+          batch.set(docRef, {
+            subjectCode: s.code,
+            prerequisiteCode: dep,
+            career,
+            institution: userInstitution,
+            createdAt: new Date(),
+          });
+        });
+      });
+    });
+
+    // Dividir en batches de máximo 450 operaciones
+    const allOperations = [...subjectBatches, ...prereqBatches];
+    const maxOpsPerBatch = 450;
+    const totalBatches = Math.ceil(allOperations.length / maxOpsPerBatch);
+    
+    console.log(`Total de operaciones: ${allOperations.length}, divididas en ${totalBatches} batches`);
+    
+    for (let i = 0; i < allOperations.length; i += maxOpsPerBatch) {
+      const batchOps = allOperations.slice(i, i + maxOpsPerBatch);
+      const batchIndex = Math.floor(i / maxOpsPerBatch) + 1;
+      
+      writeOperations.push(async () => {
+        let batchRetries = 0;
+        const maxBatchRetries = 3;
+        
+        while (batchRetries < maxBatchRetries) {
+          try {
+            const batch = writeBatch(db);
+            batchOps.forEach(op => op(batch));
+            
+            console.log(`Enviando batch ${batchIndex}/${totalBatches} (${batchOps.length} operaciones, intento ${batchRetries + 1}/${maxBatchRetries})`);
+            await batch.commit();
+            console.log(`Batch ${batchIndex} completado exitosamente`);
+            break;
+          } catch (err) {
+            batchRetries++;
+            console.error(`Error en batch ${batchIndex} (intento ${batchRetries}):`, err);
+            if (batchRetries >= maxBatchRetries) {
+              throw new Error(`Error al guardar batch ${batchIndex} después de ${maxBatchRetries} intentos: ${err instanceof Error ? err.message : 'desconocido'}`);
+            }
+            // Esperar antes de reintentar
+            await new Promise(resolve => setTimeout(resolve, 1500 * batchRetries));
+          }
+        }
+      });
+    }
+
+    // Ejecutar batches secuencialmente
+    for (let i = 0; i < writeOperations.length; i++) {
+      await writeOperations[i]();
+      // Pequeña pausa entre batches para evitar problemas de conexión
+      if (i < writeOperations.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+    }
+
+    console.log('Todos los datos guardados exitosamente');
   };
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    if (!user) {
+      setError('Por favor inicia sesión para cargar un pensum');
+      return;
+    }
+
+    if (!userInstitution) {
+      setError('No se encontró la institución en tu perfil. Por favor completa tu información de perfil.');
+      return;
+    }
 
     if (!career) {
       setError('Por favor selecciona una carrera');
@@ -507,11 +600,17 @@ export function UploadPensum({
 
     try {
       const rows = await extractRowsFromPdf(file);
+      console.log('Extracted rows:', rows.length);
+      console.log('Sample rows:', rows.slice(0, 10).map(r => r.text));
       const subjects = parseSubjectsFromRows(rows);
+      console.log('Parsed subjects:', subjects.length);
       if (subjects.length === 0) {
-        throw new Error('No subjects parsed from PDF');
+        console.log('No subjects found. All rows:', rows.map(r => r.text));
+        throw new Error('No se pudieron encontrar materias en el PDF. Verifica que el formato sea correcto y que contenga códigos de materia (ej: ABC-123).');
       }
+      console.log('Iniciando guardar de materias...');
       await saveSubjects(subjects, career);
+      console.log('Materias guardadas exitosamente');
       setSuccessMessage(`${subjects.length} materias importadas para ${career}.`);
       if (onUpload) {
         // refresh parent data after import - only clear cache for this career
@@ -521,26 +620,50 @@ export function UploadPensum({
       setCareer('');
       setPensumExists(false);
     } catch (err) {
-      const message = err instanceof Error ? err.message : '';
-      if (message.includes('Missing or insufficient permissions')) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      console.error('Error completo:', err);
+      
+      if (errorMessage.includes('Missing or insufficient permissions')) {
         setError('No tienes permiso para subir este pensum. Verifica las reglas de Firestore o que la carrera no exista ya.');
+      } else if (errorMessage.includes('Error al guardar batch')) {
+        setError(`${errorMessage} - Verifica tu conexión a internet y las permisos en Firestore.`);
+      } else if (errorMessage.includes('PDF')) {
+        setError(`Error leyendo PDF: ${errorMessage}`);
       } else {
-        setError('No se pudo leer el PDF o guardar los datos');
+        setError(`Error: ${errorMessage}`);
       }
     } finally {
       setLoading(false);
     }
   };
 
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.error('Error al cerrar sesión:', err);
+    }
+  };
+
   return (
     <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 p-6">
-      <div className="flex items-center gap-3 mb-6">
-        <div className="bg-blue-100 dark:bg-blue-900 p-2 rounded-full">
-          <Upload className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-3">
+          <div className="bg-blue-100 dark:bg-blue-900 p-2 rounded-full">
+            <Upload className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+          </div>
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+            Cargar Pensum desde PDF
+          </h2>
         </div>
-        <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
-          Cargar Pensum desde PDF
-        </h2>
+        <button
+          onClick={handleLogout}
+          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white transition-all duration-200 text-sm font-medium"
+          title="Cerrar sesión"
+        >
+          <LogOut className="w-4 h-4" />
+          Salir
+        </button>
       </div>
 
       <div className="space-y-6">
@@ -579,6 +702,36 @@ export function UploadPensum({
           <label htmlFor="pdf-upload" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
             Archivo PDF
           </label>
+          {!user && (
+            <div className="mb-4 bg-red-50 dark:bg-red-900 border border-red-200 dark:border-red-700 rounded-lg p-4">
+              <div className="flex items-center gap-3">
+                <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400" />
+                <div>
+                  <p className="font-medium text-red-800 dark:text-red-200">
+                    No estás autenticado
+                  </p>
+                  <p className="text-sm text-red-700 dark:text-red-300">
+                    Por favor inicia sesión para cargar un pensum.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+          {!userInstitution && user && (
+            <div className="mb-4 bg-red-50 dark:bg-red-900 border border-red-200 dark:border-red-700 rounded-lg p-4">
+              <div className="flex items-center gap-3">
+                <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400" />
+                <div>
+                  <p className="font-medium text-red-800 dark:text-red-200">
+                    Institución no definida
+                  </p>
+                  <p className="text-sm text-red-700 dark:text-red-300">
+                    Por favor completa tu perfil con la institución antes de cargar un pensum.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
           {hasPensumLoaded && (
             <div className="mb-4 bg-yellow-50 dark:bg-yellow-900 border border-yellow-200 dark:border-yellow-700 rounded-lg p-4">
               <div className="flex items-center gap-3">
@@ -610,7 +763,7 @@ export function UploadPensum({
             </div>
           )}
           <div className={`border-2 border-dashed rounded-lg p-6 text-center transition ${
-            (pensumExists && !checkingPensum) || hasPensumLoaded
+            (pensumExists && !checkingPensum) || hasPensumLoaded || !user || !userInstitution
               ? 'border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800'
               : 'border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500'
           }`}>
@@ -618,7 +771,7 @@ export function UploadPensum({
               type="file"
               accept="application/pdf"
               onChange={handleFile}
-              disabled={loading || !career || pensumExists || checkingPensum || hasPensumLoaded}
+              disabled={loading || !career || pensumExists || checkingPensum || hasPensumLoaded || !user || !userInstitution}
               className="hidden"
               id="pdf-upload"
             />

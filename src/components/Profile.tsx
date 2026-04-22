@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { doc, setDoc } from 'firebase/firestore';
-import { updatePassword } from 'firebase/auth';
+import { doc, setDoc, deleteDoc } from 'firebase/firestore';
+import { updatePassword, deleteUser } from 'firebase/auth';
 import { auth, db } from '../lib/firebase';
 import { UserProfile } from '../types';
 import { useTheme } from '../contexts/ThemeContext';
-import { User, Moon, Sun, Save, X } from 'lucide-react';
+import { User, Moon, Sun, Save, X, Trash2 } from 'lucide-react';
 
 interface ProfileProps {
   userProfile: UserProfile | null;
@@ -14,6 +14,7 @@ interface ProfileProps {
 
 export function Profile({ userProfile, onProfileUpdate, onClose }: ProfileProps) {
   const { theme, setTheme } = useTheme();
+  const [institution, setInstitution] = useState(userProfile?.institution || '');
   const [career, setCareer] = useState(userProfile?.career || '');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +48,7 @@ export function Profile({ userProfile, onProfileUpdate, onClose }: ProfileProps)
       const profileRef = doc(db, 'userProfiles', auth.currentUser.uid);
       await setDoc(profileRef, {
         userId: auth.currentUser.uid,
+        institution,
         career,
         theme,
         updatedAt: new Date().toISOString(),
@@ -59,8 +61,10 @@ export function Profile({ userProfile, onProfileUpdate, onClose }: ProfileProps)
       setSuccessMessage(newPassword ? 'Perfil y contraseña actualizados' : 'Perfil actualizado');
       setNewPassword('');
       setConfirmPassword('');
-      onProfileUpdate();
-      setTimeout(() => onClose(), 600);
+      
+      // Esperar a que onProfileUpdate se complete antes de cerrar
+      await onProfileUpdate();
+      setTimeout(() => onClose(), 800);
     } catch (err) {
       const message = err instanceof Error ? err.message : '';
       if (message.includes('requires-recent-login')) {
@@ -75,6 +79,38 @@ export function Profile({ userProfile, onProfileUpdate, onClose }: ProfileProps)
 
   const handleThemeChange = (newTheme: 'light' | 'dark') => {
     setTheme(newTheme);
+  };
+
+  const handleDeleteAccount = async () => {
+    if (!auth.currentUser) return;
+
+    const confirmDelete = window.confirm(
+      '¿Estás seguro de que quieres eliminar tu cuenta? Esta acción no se puede deshacer y perderás todos tus datos.'
+    );
+
+    if (!confirmDelete) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      // Delete user profile
+      const profileRef = doc(db, 'userProfiles', auth.currentUser.uid);
+      await deleteDoc(profileRef);
+
+      // Delete user account
+      await deleteUser(auth.currentUser);
+
+      // The user will be signed out automatically
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '';
+      if (message.includes('requires-recent-login')) {
+        setError('Por seguridad, vuelve a iniciar sesión antes de eliminar tu cuenta');
+      } else {
+        setError('Error al eliminar la cuenta. Inténtalo de nuevo.');
+      }
+      setLoading(false);
+    }
   };
 
   return (
@@ -127,6 +163,26 @@ export function Profile({ userProfile, onProfileUpdate, onClose }: ProfileProps)
                 <span className="font-medium">Oscuro</span>
               </button>
             </div>
+          </div>
+
+          {/* Institución */}
+          <div>
+            <label htmlFor="institution" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Institución *
+            </label>
+            <input
+              id="institution"
+              type="text"
+              value={institution}
+              onChange={(e) => setInstitution(e.target.value)}
+              autoFocus={!institution}
+              className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white transition-all duration-200 text-base"
+              placeholder="Ej: UNICARIBE, Universidad Nacional, PUCMM, etc."
+              required
+            />
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              Escribe el nombre de tu institución educativa. Los cambios se guardarán inmediatamente.
+            </p>
           </div>
 
           {/* Carrera */}
@@ -198,8 +254,9 @@ export function Profile({ userProfile, onProfileUpdate, onClose }: ProfileProps)
           <div className="flex gap-3 pt-4">
             <button
               onClick={handleSave}
-              disabled={loading}
+              disabled={loading || !institution.trim()}
               className="flex-1 bg-blue-600 hover:bg-blue-700 dark:bg-blue-700 dark:hover:bg-blue-800 text-white py-3 px-4 rounded-lg font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transform hover:scale-[1.02] active:scale-[0.98]"
+              title={!institution.trim() ? 'Escribe tu institución para guardar' : ''}
             >
               <Save className="w-4 h-4" />
               {loading ? 'Guardando...' : 'Guardar Cambios'}
@@ -209,6 +266,17 @@ export function Profile({ userProfile, onProfileUpdate, onClose }: ProfileProps)
               className="px-6 py-3 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-200 font-medium"
             >
               Cancelar
+            </button>
+          </div>
+
+          <div className="border-t border-gray-200 dark:border-gray-700 pt-4 mt-6">
+            <button
+              onClick={handleDeleteAccount}
+              disabled={loading}
+              className="w-full bg-red-600 hover:bg-red-700 text-white py-3 px-4 rounded-lg font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              <Trash2 className="w-4 h-4" />
+              Eliminar Cuenta
             </button>
           </div>
         </div>

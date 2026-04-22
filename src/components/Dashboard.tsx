@@ -53,7 +53,15 @@ export function Dashboard() {
   }, [selectedCareer, userProfile?.career]);
 
   const handleCareerSelection = useCallback(async () => {
-    if (!auth.currentUser || !selectedCareer) return;
+    if (!auth.currentUser || !selectedCareer) {
+      setOnboardingError('Por favor selecciona una carrera');
+      return;
+    }
+
+    if (!userProfile?.institution) {
+      setOnboardingError('Por favor establece tu institución en tu perfil antes de continuar');
+      return;
+    }
 
     setOnboardingLoading(true);
     setOnboardingError(null);
@@ -62,6 +70,7 @@ export function Dashboard() {
       await setDoc(doc(db, 'userProfiles', auth.currentUser.uid), {
         userId: auth.currentUser.uid,
         career: selectedCareer,
+        institution: userProfile.institution, // Ensure institution is saved
         theme,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -73,7 +82,7 @@ export function Dashboard() {
     } finally {
       setOnboardingLoading(false);
     }
-  }, [refreshData, selectedCareer, theme]);
+  }, [refreshData, selectedCareer, theme, userProfile?.institution]);
 
   const handleLogout = async () => {
     try {
@@ -121,31 +130,78 @@ export function Dashboard() {
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center p-4">
       <div className="text-center max-w-md">
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8 border border-gray-200 dark:border-gray-700">
-          {!userProfile?.career ? (
+          {!userProfile?.career || !userProfile?.institution ? (
             <>
               <div className="mb-6">
                 <div className="bg-blue-100 dark:bg-blue-900/20 p-4 rounded-full w-20 h-20 mx-auto mb-4 flex items-center justify-center">
                   <BookOpen className="w-10 h-10 text-blue-600 dark:text-blue-400" />
                 </div>
                 <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-                  Elige tu carrera
+                  Completa tu perfil
                 </h2>
                 <p className="text-gray-600 dark:text-gray-400 mb-6">
-                  Primero guarda tu carrera. Si el pensum ya existe, entrarás directo; si no, luego podrás cargarlo.
+                  Sigue estos pasos para configurar tu pensum:
                 </p>
+                <ol className="text-sm text-gray-600 dark:text-gray-400 space-y-2 mb-6">
+                  <li className={`flex gap-2 ${!userProfile?.institution ? 'text-red-600 dark:text-red-400 font-medium' : 'text-green-600 dark:text-green-400'}`}>
+                    <span>1.</span>
+                    <span>{!userProfile?.institution ? '❌ Establece tu institución' : '✅ Institución establecida'}</span>
+                  </li>
+                  <li className={`flex gap-2 ${!userProfile?.career ? 'text-orange-600 dark:text-orange-400 font-medium' : 'text-green-600 dark:text-green-400'}`}>
+                    <span>2.</span>
+                    <span>{!userProfile?.career ? '⏳ Selecciona tu carrera' : '✅ Carrera seleccionada'}</span>
+                  </li>
+                  <li className="flex gap-2 text-gray-600 dark:text-gray-400">
+                    <span>3.</span>
+                    <span>Carga el PDF de tu pensum</span>
+                  </li>
+                </ol>
               </div>
 
               <div className="space-y-4 text-left">
+                {!userProfile?.institution && (
+                  <div className="bg-red-50 dark:bg-red-900/30 border-2 border-red-200 dark:border-red-700 rounded-lg p-4">
+                    <p className="text-sm text-red-700 dark:text-red-300 mb-3">
+                      <span className="font-semibold">⚠️ Paso 1 - Institución requerida</span>
+                    </p>
+                    <p className="text-xs text-red-600 dark:text-red-400 mb-3">
+                      Haz clic en el botón de abajo para abrir tu perfil y escribir el nombre de tu institución.
+                    </p>
+                    <button
+                      onClick={() => {
+                        console.log('Abriendo perfil...');
+                        setShowProfile(true);
+                      }}
+                      className="w-full bg-red-600 hover:bg-red-700 active:bg-red-800 text-white py-3 px-4 rounded-lg font-medium text-sm transition-all duration-200 transform hover:scale-[1.01] active:scale-[0.98]"
+                    >
+                      ✏️ Abre tu perfil para establecer tu institución
+                    </button>
+                  </div>
+                )}
+                {userProfile?.institution && (
+                  <div className="bg-green-50 dark:bg-green-900/30 border-2 border-green-200 dark:border-green-700 rounded-lg p-4">
+                    <p className="text-sm text-green-700 dark:text-green-300">
+                      <span className="font-semibold">✓ Institución establecida:</span> {userProfile.institution}
+                    </p>
+                  </div>
+                )}
+                {userProfile?.institution && !userProfile?.career && (
+                  <div className="bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-700 rounded-lg p-4">
+                    <p className="text-sm text-orange-700 dark:text-orange-300 mb-2">
+                      <span className="font-semibold">⏳ Paso 2 - Selecciona tu carrera</span>
+                    </p>
+                  </div>
+                )}
                 <div>
                   <label htmlFor="onboarding-career" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    Carrera
+                    Carrera *
                   </label>
                   <select
                     id="onboarding-career"
                     value={selectedCareer}
                     onChange={(e) => setSelectedCareer(e.target.value)}
-                    disabled={onboardingLoading}
-                    className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white transition-all duration-200"
+                    disabled={onboardingLoading || !userProfile?.institution}
+                    className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white transition-all duration-200 disabled:opacity-50"
                   >
                     <option value="">Selecciona tu carrera</option>
                     <option value="Ingeniería de Software">Ingeniería de Software</option>
@@ -186,7 +242,7 @@ export function Dashboard() {
 
                 <button
                   onClick={handleCareerSelection}
-                  disabled={!selectedCareer || checkingCareerPensum || onboardingLoading}
+                  disabled={!selectedCareer || checkingCareerPensum || onboardingLoading || !userProfile?.institution}
                   className="w-full bg-blue-600 hover:bg-blue-700 dark:bg-blue-700 dark:hover:bg-blue-800 text-white py-3 rounded-lg font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {onboardingLoading
@@ -216,6 +272,7 @@ export function Dashboard() {
               <UploadPensum
                 onUpload={handleUpload}
                 userCareer={userProfile?.career}
+                userInstitution={userProfile?.institution}
                 hasPensumLoaded={false}
               />
             </>
@@ -273,6 +330,11 @@ export function Dashboard() {
             <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-1">
               {userProfile.career}
             </h1>
+          )}
+          {userProfile?.institution && (
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              {userProfile.institution}
+            </p>
           )}
           <p className="text-xs text-gray-500 dark:text-gray-400">creado por AX300</p>
         </div>
@@ -431,7 +493,7 @@ export function Dashboard() {
       {showProfile && (
         <Profile
           userProfile={userProfile}
-          onProfileUpdate={refreshData}
+          onProfileUpdate={() => refreshData(true)}
           onClose={() => setShowProfile(false)}
         />
       )}

@@ -1,0 +1,74 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ✅ Público: Lectura de estructura pensum (nueva)
+    // ✅ Autenticado: Crear nuevos pensum (solo si no existen)
+    // Permite lectura de:
+    //   - pensum/{careerName}
+    //   - pensum/{careerName}/subjects/{docId}
+    //   - pensum/{careerName}/prerequisites/{docId}
+    match /pensum/{careerName} {
+      allow read: if true;
+      // Solo crear si está autenticado (permitir crear nuevos documentos)
+      allow create: if request.auth != null;
+      // No permitir actualizar o eliminar después de creado
+      allow update, delete: if false;
+      
+      // Permitir escribir en subcollections (subjects y prerequisites)
+      // si el usuario está autenticado
+      match /subjects/{document=**} {
+        allow read: if true;
+        // Permitir escribir si autenticado (el documento padre se crea simultáneamente)
+        allow write: if request.auth != null;
+      }
+      
+      match /prerequisites/{document=**} {
+        allow read: if true;
+        // Permitir escribir si autenticado (el documento padre se crea simultáneamente)
+        allow write: if request.auth != null;
+      }
+    }
+    
+    // ✅ Público: Lectura de materias (legacy - antes de migración)
+    // Mantener para compatibilidad con datos antiguos
+    match /subjects/{document=**} {
+      allow read: if true;
+    }
+    
+    // ✅ Público: Lectura de prerequisitos (legacy - antes de migración)
+    // Mantener para compatibilidad con datos antiguos
+    match /prerequisites/{document=**} {
+      allow read: if true;
+    }
+    
+    // 🔒 Privado: Progreso por usuario en subcolección propia
+    // Ruta nueva:
+    //   users/{userId}/progress/{progressId}
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+
+      match /progress/{progressId} {
+        allow read: if request.auth != null && request.auth.uid == userId;
+        allow write: if request.auth != null
+          && request.auth.uid == userId
+          && request.resource.data.userId == userId;
+      }
+    }
+
+    // Compatibilidad temporal con documentos legacy en colección raíz
+    match /user_progress/{document=**} {
+      allow read, write: if request.auth.uid == resource.data.userId ||
+                           request.auth.uid == request.resource.data.userId;
+    }
+    
+    // 🔒 Privado: Perfil del usuario - solo el propio usuario
+    // El usuario solo puede:
+    //   - Leer su propio perfil
+    //   - Escribir/actualizar su propio perfil
+    match /userProfiles/{document=**} {
+      allow read, write: if request.auth.uid == resource.data.userId || 
+                          request.auth.uid == request.resource.data.userId;
+    }
+  }
+}
+

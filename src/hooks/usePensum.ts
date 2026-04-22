@@ -63,12 +63,17 @@ export function usePensum() {
         }
       }
 
-      // Cargar subjects y prerequisites desde subcollections por carrera
+      // Cargar subjects y prerequisites desde subcollections por institución+carrera
       if (profileData?.career) {
         try {
+          // Crear ID compuesto institución_carrera para el documento raíz del pensum
+          const pensumDocId = profileData.institution
+            ? `${profileData.institution}_${profileData.career}`
+            : profileData.career; // Compatibilidad con usuarios existentes sin institución
+
           const [subjectsSnapshot, prerequisitesSnapshot] = await Promise.all([
-            getDocs(collection(db, 'pensum', profileData.career, 'subjects')),
-            getDocs(collection(db, 'pensum', profileData.career, 'prerequisites'))
+            getDocs(collection(db, 'pensum', pensumDocId, 'subjects')),
+            getDocs(collection(db, 'pensum', pensumDocId, 'prerequisites'))
           ].map(p => p.catch(err => {
             // Si falla por permisos, retorna snapshot vacío
             if (err instanceof Error && err.message.includes('Missing or insufficient permissions')) {

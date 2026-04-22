@@ -19,12 +19,13 @@ export function Auth({ onAuthSuccess }: AuthProps) {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [institution, setInstitution] = useState('');
   const [career, setCareer] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
 
-  async function ensureUserProfile(userId: string, defaultCareer = '') {
+  async function ensureUserProfile(userId: string, defaultInstitution = '', defaultCareer = '') {
     const profileRef = doc(db, 'userProfiles', userId);
     const profileSnapshot = await getDoc(profileRef);
 
@@ -32,6 +33,7 @@ export function Auth({ onAuthSuccess }: AuthProps) {
       const profile: UserProfile = {
         id: userId,
         userId,
+        institution: defaultInstitution,
         career: defaultCareer,
         theme: 'light',
         createdAt: new Date().toISOString(),
@@ -40,10 +42,17 @@ export function Auth({ onAuthSuccess }: AuthProps) {
       return;
     }
 
-    if (defaultCareer) {
+    if (defaultInstitution || defaultCareer) {
       const currentProfile = profileSnapshot.data() as Partial<UserProfile>;
-      if (!currentProfile.career) {
-        await setDoc(profileRef, { career: defaultCareer }, { merge: true });
+      const updates: Partial<UserProfile> = {};
+      if (defaultInstitution && !currentProfile.institution) {
+        updates.institution = defaultInstitution;
+      }
+      if (defaultCareer && !currentProfile.career) {
+        updates.career = defaultCareer;
+      }
+      if (Object.keys(updates).length > 0) {
+        await setDoc(profileRef, updates, { merge: true });
       }
     }
   }
@@ -98,6 +107,7 @@ export function Auth({ onAuthSuccess }: AuthProps) {
         await ensureUserProfile(userCredential.user.uid);
       } else {
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        await ensureUserProfile(userCredential.user.uid, institution, career);
         await sendEmailVerification(userCredential.user);
         await signOut(auth);
         setInfoMessage('Te enviamos un correo de verificación. Valídalo antes de iniciar sesión.');
@@ -139,14 +149,14 @@ export function Auth({ onAuthSuccess }: AuthProps) {
         </div>
 
         <h1 className="text-2xl font-bold text-center text-gray-900 dark:text-white mb-2">
-          Bienvenido{!isLogin && career ? ',' : ''}
+          Bienvenido{!isLogin && institution ? ',' : ''}
         </h1>
         <p className="text-center text-gray-600 dark:text-gray-400 mb-8">
           {isLogin
             ? 'creado por AX300'
-            : career
-              ? career
-              : 'Selecciona tu carrera al registrarte'}
+            : institution
+              ? `Institución: ${institution}`
+              : 'Escribe tu institución y carrera al registrarte'}
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -182,25 +192,37 @@ export function Auth({ onAuthSuccess }: AuthProps) {
           </div>
 
           {!isLogin && (
-            <div>
-              <label htmlFor="career" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Carrera
-              </label>
-              <select
-                id="career"
-                value={career}
-                onChange={(e) => setCareer(e.target.value)}
-                required
-                className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white outline-none transition-all duration-200"
-              >
-                <option value="">Selecciona tu carrera</option>
-                <option value="Ingeniería de Software">Ingeniería de Software</option>
-                <option value="Ingeniería de Datos">Ingeniería de Datos</option>
-                <option value="Ingeniería en Ciberseguridad">Ingeniería en Ciberseguridad</option>
-                <option value="Ciencias de la Computación">Ciencias de la Computación</option>
-                <option value="Otra">Otra</option>
-              </select>
-            </div>
+            <>
+              <div>
+                <label htmlFor="institution" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Institución
+                </label>
+                <input
+                  id="institution"
+                  type="text"
+                  value={institution}
+                  onChange={(e) => setInstitution(e.target.value)}
+                  required
+                  className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white outline-none transition-all duration-200"
+                  placeholder="Ej: Universidad Nacional, Universidad de los Andes, etc."
+                />
+              </div>
+
+              <div>
+                <label htmlFor="career" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Carrera
+                </label>
+                <input
+                  id="career"
+                  type="text"
+                  value={career}
+                  onChange={(e) => setCareer(e.target.value)}
+                  required
+                  className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white outline-none transition-all duration-200"
+                  placeholder="Ej: Ingeniería de Software, Medicina, Derecho, etc."
+                />
+              </div>
+            </>
           )}
 
           {error && (

@@ -31,6 +31,7 @@ export interface UserProgress {
 export interface UserProfile {
   id: string;
   userId: string;
+  institution?: string;
   career: string;
   theme: 'light' | 'dark';
   createdAt: string;
