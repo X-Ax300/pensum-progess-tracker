@@ -686,7 +686,9 @@ export function UploadPensum({
             <option value="Ciencias de la Computación">Ciencias de la Computación</option>
             <option value="Ingeniería Civil">Ingeniería Civil</option>
             <option value="Ingeniería Mecánica">Ingeniería Mecánica</option>
-            <option value="Ingeniería Eléctrica">Ingeniería Eléctrica</option>
+            <option value="Licenciatura en
+Derecho">Licenciatura en
+Derecho</option>
             <option value="Administración de Empresas">Administración de Empresas</option>
             <option value="Otra">Otra</option>
           </select>
