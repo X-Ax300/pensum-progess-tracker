@@ -20,6 +20,7 @@ export function Dashboard() {
   const [filter, setFilter] = useState<FilterType>('all');
   const [showProfile, setShowProfile] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [selectedInstitution, setSelectedInstitution] = useState(userProfile?.institution || '');
   const [selectedCareer, setSelectedCareer] = useState(userProfile?.career || '');
   const [checkingCareerPensum, setCheckingCareerPensum] = useState(false);
   const [selectedCareerPensumExists, setSelectedCareerPensumExists] = useState(false);
@@ -27,11 +28,13 @@ export function Dashboard() {
   const [onboardingError, setOnboardingError] = useState<string | null>(null);
 
   useEffect(() => {
+    setSelectedInstitution(userProfile?.institution || '');
     setSelectedCareer(userProfile?.career || '');
-  }, [userProfile?.career]);
+  }, [userProfile?.career, userProfile?.institution]);
 
   useEffect(() => {
-    if (userProfile?.career || !selectedCareer) {
+    const institution = selectedInstitution.trim();
+    if (userProfile?.career || !selectedCareer || !institution) {
       setSelectedCareerPensumExists(false);
       setCheckingCareerPensum(false);
       return;
@@ -40,7 +43,7 @@ export function Dashboard() {
     const checkCareerPensum = async () => {
       setCheckingCareerPensum(true);
       try {
-        const pensumSnapshot = await getDoc(doc(db, 'pensum', selectedCareer));
+        const pensumSnapshot = await getDoc(doc(db, 'pensum', `${institution}_${selectedCareer}`));
         setSelectedCareerPensumExists(pensumSnapshot.exists());
       } catch {
         setSelectedCareerPensumExists(false);
@@ -50,16 +53,23 @@ export function Dashboard() {
     };
 
     checkCareerPensum();
-  }, [selectedCareer, userProfile?.career]);
+  }, [selectedCareer, selectedInstitution, userProfile?.career]);
 
   const handleCareerSelection = useCallback(async () => {
-    if (!auth.currentUser || !selectedCareer) {
-      setOnboardingError('Por favor selecciona una carrera');
+    const institution = selectedInstitution.trim();
+
+    if (!auth.currentUser) {
+      setOnboardingError('Por favor inicia sesión para continuar');
       return;
     }
 
-    if (!userProfile?.institution) {
-      setOnboardingError('Por favor establece tu institución en tu perfil antes de continuar');
+    if (!institution) {
+      setOnboardingError('Por favor escribe tu institución');
+      return;
+    }
+
+    if (!selectedCareer) {
+      setOnboardingError('Por favor selecciona una carrera');
       return;
     }
 
@@ -70,7 +80,7 @@ export function Dashboard() {
       await setDoc(doc(db, 'userProfiles', auth.currentUser.uid), {
         userId: auth.currentUser.uid,
         career: selectedCareer,
-        institution: userProfile.institution, // Ensure institution is saved
+        institution,
         theme,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -82,7 +92,7 @@ export function Dashboard() {
     } finally {
       setOnboardingLoading(false);
     }
-  }, [refreshData, selectedCareer, theme, userProfile?.institution]);
+  }, [refreshData, selectedCareer, selectedInstitution, theme]);
 
   const handleLogout = async () => {
     try {
@@ -143,13 +153,13 @@ export function Dashboard() {
                   Sigue estos pasos para configurar tu pensum:
                 </p>
                 <ol className="text-sm text-gray-600 dark:text-gray-400 space-y-2 mb-6">
-                  <li className={`flex gap-2 ${!userProfile?.institution ? 'text-red-600 dark:text-red-400 font-medium' : 'text-green-600 dark:text-green-400'}`}>
+                  <li className={`flex gap-2 ${!selectedInstitution.trim() ? 'text-red-600 dark:text-red-400 font-medium' : 'text-green-600 dark:text-green-400'}`}>
                     <span>1.</span>
-                    <span>{!userProfile?.institution ? '❌ Establece tu institución' : '✅ Institución establecida'}</span>
+                    <span>{!selectedInstitution.trim() ? '❌ Establece tu institución' : '✅ Institución establecida'}</span>
                   </li>
-                  <li className={`flex gap-2 ${!userProfile?.career ? 'text-orange-600 dark:text-orange-400 font-medium' : 'text-green-600 dark:text-green-400'}`}>
+                  <li className={`flex gap-2 ${!selectedCareer ? 'text-orange-600 dark:text-orange-400 font-medium' : 'text-green-600 dark:text-green-400'}`}>
                     <span>2.</span>
-                    <span>{!userProfile?.career ? '⏳ Selecciona tu carrera' : '✅ Carrera seleccionada'}</span>
+                    <span>{!selectedCareer ? '⏳ Selecciona tu carrera' : '✅ Carrera seleccionada'}</span>
                   </li>
                   <li className="flex gap-2 text-gray-600 dark:text-gray-400">
                     <span>3.</span>
@@ -159,39 +169,21 @@ export function Dashboard() {
               </div>
 
               <div className="space-y-4 text-left">
-                {!userProfile?.institution && (
-                  <div className="bg-red-50 dark:bg-red-900/30 border-2 border-red-200 dark:border-red-700 rounded-lg p-4">
-                    <p className="text-sm text-red-700 dark:text-red-300 mb-3">
-                      <span className="font-semibold">⚠️ Paso 1 - Institución requerida</span>
-                    </p>
-                    <p className="text-xs text-red-600 dark:text-red-400 mb-3">
-                      Haz clic en el botón de abajo para abrir tu perfil y escribir el nombre de tu institución.
-                    </p>
-                    <button
-                      onClick={() => {
-                        console.log('Abriendo perfil...');
-                        setShowProfile(true);
-                      }}
-                      className="w-full bg-red-600 hover:bg-red-700 active:bg-red-800 text-white py-3 px-4 rounded-lg font-medium text-sm transition-all duration-200 transform hover:scale-[1.01] active:scale-[0.98]"
-                    >
-                      ✏️ Abre tu perfil para establecer tu institución
-                    </button>
-                  </div>
-                )}
-                {userProfile?.institution && (
-                  <div className="bg-green-50 dark:bg-green-900/30 border-2 border-green-200 dark:border-green-700 rounded-lg p-4">
-                    <p className="text-sm text-green-700 dark:text-green-300">
-                      <span className="font-semibold">✓ Institución establecida:</span> {userProfile.institution}
-                    </p>
-                  </div>
-                )}
-                {userProfile?.institution && !userProfile?.career && (
-                  <div className="bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-700 rounded-lg p-4">
-                    <p className="text-sm text-orange-700 dark:text-orange-300 mb-2">
-                      <span className="font-semibold">⏳ Paso 2 - Selecciona tu carrera</span>
-                    </p>
-                  </div>
-                )}
+                <div>
+                  <label htmlFor="onboarding-institution" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Institución *
+                  </label>
+                  <input
+                    id="onboarding-institution"
+                    type="text"
+                    value={selectedInstitution}
+                    onChange={(e) => setSelectedInstitution(e.target.value)}
+                    disabled={onboardingLoading}
+                    className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white transition-all duration-200 disabled:opacity-50"
+                    placeholder="Ej: UNICARIBE, UASD, PUCMM"
+                  />
+                </div>
+
                 <div>
                   <label htmlFor="onboarding-career" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                     Carrera *
@@ -200,7 +192,7 @@ export function Dashboard() {
                     id="onboarding-career"
                     value={selectedCareer}
                     onChange={(e) => setSelectedCareer(e.target.value)}
-                    disabled={onboardingLoading || !userProfile?.institution}
+                    disabled={onboardingLoading || !selectedInstitution.trim()}
                     className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white transition-all duration-200 disabled:opacity-50"
                   >
                     <option value="">Selecciona tu carrera</option>
@@ -242,7 +234,7 @@ export function Dashboard() {
 
                 <button
                   onClick={handleCareerSelection}
-                  disabled={!selectedCareer || checkingCareerPensum || onboardingLoading || !userProfile?.institution}
+                  disabled={!selectedInstitution.trim() || !selectedCareer || checkingCareerPensum || onboardingLoading}
                   className="w-full bg-blue-600 hover:bg-blue-700 dark:bg-blue-700 dark:hover:bg-blue-800 text-white py-3 rounded-lg font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {onboardingLoading
