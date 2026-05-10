@@ -1,4 +1,4 @@
-import { BookOpen, Award, Clock, TrendingUp, AlertCircle, LogOut, User, Moon, Sun, Search } from 'lucide-react';
+import { BookOpen, Award, Clock, TrendingUp, AlertCircle, LogOut, User, Moon, Sun, Search, Eye, EyeOff } from 'lucide-react';
 import { signOut } from 'firebase/auth';
 import { collection, doc, getDoc, getDocs, setDoc } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
@@ -27,6 +27,22 @@ const CAREER_OPTIONS = [
   'Otra',
 ] as const;
 
+const MONTH_FORMATTER = new Intl.DateTimeFormat('es', {
+  month: 'long',
+  year: 'numeric',
+});
+
+function getApproximateCompletionDate(remainingSemesters: number) {
+  if (!Number.isFinite(remainingSemesters) || remainingSemesters <= 0) {
+    return MONTH_FORMATTER.format(new Date());
+  }
+
+  const completionDate = new Date();
+  completionDate.setMonth(completionDate.getMonth() + (remainingSemesters * 4));
+
+  return MONTH_FORMATTER.format(completionDate);
+}
+
 export function Dashboard() {
   const { loading, error, updateSubjectStatus, updateValidatedStatus, getSubjectsWithProgress, calculateStats, refreshData, userProfile } = usePensum();
   const { theme, toggleTheme } = useTheme();
@@ -42,6 +58,7 @@ export function Dashboard() {
   const [onboardingError, setOnboardingError] = useState<string | null>(null);
   const [availableInstitutions, setAvailableInstitutions] = useState<string[]>([]);
   const [institutionCareerMap, setInstitutionCareerMap] = useState<Record<string, string[]>>({});
+  const [showEstimatedCompletionDate, setShowEstimatedCompletionDate] = useState(false);
 
   useEffect(() => {
     setSelectedInstitution(userProfile?.institution || '');
@@ -372,6 +389,13 @@ export function Dashboard() {
 
   const subjectsWithProgress = getSubjectsWithProgress();
   const stats = calculateStats();
+  const safeEstimatedSemestersRemaining = Number.isNaN(stats.estimatedSemestersRemaining)
+    ? 0
+    : stats.estimatedSemestersRemaining;
+  const safeEstimatedSemestersRemainingPrecise = Number.isNaN(stats.estimatedSemestersRemainingPrecise)
+    ? 0
+    : stats.estimatedSemestersRemainingPrecise;
+  const approximateCompletionDate = getApproximateCompletionDate(safeEstimatedSemestersRemaining);
 
   if (subjectsWithProgress.length === 0) return renderEmptyState();
 
@@ -484,8 +508,29 @@ export function Dashboard() {
       />
       <StatsCard
         title="Cuatrimestres restantes"
-        value={Number.isNaN(stats.estimatedSemestersRemaining) ? 0 : stats.estimatedSemestersRemaining}
-        subtitle={`${Number.isNaN(stats.estimatedSemestersRemainingPrecise) ? 0 : stats.estimatedSemestersRemainingPrecise} estimados`}
+        value={safeEstimatedSemestersRemaining}
+        subtitle={`${safeEstimatedSemestersRemainingPrecise} estimados`}
+        extraContent={
+          <button
+            type="button"
+            onClick={() => setShowEstimatedCompletionDate((current) => !current)}
+            className="mt-3 inline-flex w-full items-center justify-between gap-2 rounded-lg border border-dashed border-gray-300 bg-gray-50 px-3 py-2 text-left text-sm font-medium text-gray-700 transition-all duration-200 hover:border-gray-400 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-400 dark:border-gray-600 dark:bg-gray-700/50 dark:text-gray-200 dark:hover:border-gray-500 dark:hover:bg-gray-700"
+            title={showEstimatedCompletionDate ? 'Ocultar fecha aproximada' : 'Ver fecha aproximada de culminación'}
+            aria-label={showEstimatedCompletionDate ? 'Ocultar fecha aproximada de culminación' : 'Ver fecha aproximada de culminación'}
+          >
+            <span>
+              Aproximadamente finalizas:{' '}
+              <span className="font-bold text-gray-900 dark:text-white">
+                {showEstimatedCompletionDate ? approximateCompletionDate : '****'}
+              </span>
+            </span>
+            {showEstimatedCompletionDate ? (
+              <EyeOff className="h-4 w-4 shrink-0 text-gray-500 dark:text-gray-300" />
+            ) : (
+              <Eye className="h-4 w-4 shrink-0 text-gray-500 dark:text-gray-300" />
+            )}
+          </button>
+        }
         icon={TrendingUp}
         color="gray"
       />
