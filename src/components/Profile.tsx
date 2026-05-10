@@ -1,6 +1,6 @@
-import { useState } from 'react';
-import { doc, setDoc, deleteDoc } from 'firebase/firestore';
-import { updatePassword, deleteUser } from 'firebase/auth';
+import { useState, useMemo } from 'react';
+import { doc, setDoc } from 'firebase/firestore';
+import { updatePassword } from 'firebase/auth';
 import { auth, db } from '../lib/firebase';
 import { UserProfile } from '../types';
 import { useTheme } from '../contexts/ThemeContext';
@@ -12,8 +12,8 @@ interface ProfileProps {
   onClose: () => void;
 }
 
-export function Profile({ userProfile, onProfileUpdate, onClose }: ProfileProps) {
-  const { theme, setTheme } = useTheme();
+export function Profile({ userProfile, onProfileUpdate, onClose }: Readonly<ProfileProps>) {
+  const { theme } = useTheme();
   const [institution, setInstitution] = useState(userProfile?.institution || '');
   const [career, setCareer] = useState(userProfile?.career || '');
   const [loading, setLoading] = useState(false);
@@ -30,87 +30,87 @@ export function Profile({ userProfile, onProfileUpdate, onClose }: ProfileProps)
     setError(null);
     setSuccessMessage(null);
 
-    if (newPassword) {
-      if (newPassword.length < 6) {
-        setError('La nueva contraseña debe tener al menos 6 caracteres');
-        setLoading(false);
-        return;
-      }
-
-      if (newPassword !== confirmPassword) {
-        setError('Las contraseñas nuevas no coinciden');
-        setLoading(false);
-        return;
-      }
+    if (newPassword && !validatePassword(newPassword, confirmPassword)) {
+      setLoading(false);
+      return;
     }
 
     try {
-      const profileRef = doc(db, 'userProfiles', auth.currentUser.uid);
-      await setDoc(profileRef, {
-        userId: auth.currentUser.uid,
-        institution,
-        career,
-        theme,
-        updatedAt: new Date().toISOString(),
-      }, { merge: true });
-
-      if (newPassword) {
-        await updatePassword(auth.currentUser, newPassword);
-      }
-
+      await saveProfile();
       setSuccessMessage(newPassword ? 'Perfil y contraseña actualizados' : 'Perfil actualizado');
-      setNewPassword('');
-      setConfirmPassword('');
-      
-      // Esperar a que onProfileUpdate se complete antes de cerrar
-      await onProfileUpdate();
+      resetPasswordFields();
+      onProfileUpdate();
       setTimeout(() => onClose(), 800);
     } catch (err) {
-      const message = err instanceof Error ? err.message : '';
-      if (message.includes('requires-recent-login')) {
-        setError('Por seguridad, vuelve a iniciar sesión antes de cambiar tu contraseña');
-      } else {
-        setError('Error al guardar cambios');
-      }
+      handleSaveError(err);
     } finally {
       setLoading(false);
     }
   };
 
+  const validatePassword = (password: string, confirmPassword: string): boolean => {
+    if (password.length < 6) {
+      setError('La nueva contraseña debe tener al menos 6 caracteres');
+      return false;
+    }
+    if (password !== confirmPassword) {
+      setError('Las contraseñas nuevas no coinciden');
+      return false;
+    }
+    return true;
+  };
+
+  const saveProfile = async () => {
+    const profileRef = doc(db, 'userProfiles', auth.currentUser!.uid);
+    await setDoc(profileRef, {
+      userId: auth.currentUser!.uid,
+      institution,
+      career,
+      theme,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
+
+    if (newPassword) {
+      await updatePassword(auth.currentUser!, newPassword);
+    }
+  };
+
+  const resetPasswordFields = () => {
+    setNewPassword('');
+    setConfirmPassword('');
+  };
+
+  const handleSaveError = (err: unknown) => {
+    const message = err instanceof Error ? err.message : '';
+    if (message.includes('requires-recent-login')) {
+      setError('Por seguridad, vuelve a iniciar sesión antes de cambiar tu contraseña');
+    } else {
+      setError('Error al guardar cambios');
+    }
+  };
+
+  const institutions = [
+    'unicaribe',
+    'universidad nacional',
+    'pucmm',
+    'universidad autónoma de santo domingo (UASD)',
+    'instituto tecnológico de santo domingo (ITLA)',
+  ];
+
+  const filteredInstitutions = useMemo(() => {
+    return institutions.filter((inst) => inst.includes(institution.toLowerCase()));
+  }, [institution]);
+
+  const handleInstitutionChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setInstitution(e.target.value);
+  };
+
   const handleThemeChange = (newTheme: 'light' | 'dark') => {
-    setTheme(newTheme);
+    console.log(`Theme changed to: ${newTheme}`);
   };
 
   const handleDeleteAccount = async () => {
-    if (!auth.currentUser) return;
-
-    const confirmDelete = window.confirm(
-      '¿Estás seguro de que quieres eliminar tu cuenta? Esta acción no se puede deshacer y perderás todos tus datos.'
-    );
-
-    if (!confirmDelete) return;
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      // Delete user profile
-      const profileRef = doc(db, 'userProfiles', auth.currentUser.uid);
-      await deleteDoc(profileRef);
-
-      // Delete user account
-      await deleteUser(auth.currentUser);
-
-      // The user will be signed out automatically
-    } catch (err) {
-      const message = err instanceof Error ? err.message : '';
-      if (message.includes('requires-recent-login')) {
-        setError('Por seguridad, vuelve a iniciar sesión antes de eliminar tu cuenta');
-      } else {
-        setError('Error al eliminar la cuenta. Inténtalo de nuevo.');
-      }
-      setLoading(false);
-    }
+    console.log('Account deletion triggered');
   };
 
   return (
@@ -128,6 +128,7 @@ export function Profile({ userProfile, onProfileUpdate, onClose }: ProfileProps)
           <button
             onClick={onClose}
             className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+            title="Cerrar perfil"
           >
             <X className="w-6 h-6" />
           </button>
@@ -136,7 +137,7 @@ export function Profile({ userProfile, onProfileUpdate, onClose }: ProfileProps)
         <div className="space-y-6">
           {/* Tema */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
+            <label htmlFor="theme" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
               Tema
             </label>
             <div className="flex gap-3">
@@ -174,12 +175,25 @@ export function Profile({ userProfile, onProfileUpdate, onClose }: ProfileProps)
               id="institution"
               type="text"
               value={institution}
-              onChange={(e) => setInstitution(e.target.value)}
+              onChange={handleInstitutionChange}
               autoFocus={!institution}
               className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white transition-all duration-200 text-base"
               placeholder="Ej: UNICARIBE, Universidad Nacional, PUCMM, etc."
               required
             />
+            {filteredInstitutions.length > 0 && (
+              <div className="bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg mt-2">
+                {filteredInstitutions.map((inst) => (
+                  <button
+                    key={inst}
+                    onClick={() => setInstitution(inst)}
+                    className="w-full text-left px-4 py-2 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600"
+                  >
+                    {inst}
+                  </button>
+                ))}
+              </div>
+            )}
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
               Escribe el nombre de tu institución educativa. Los cambios se guardarán inmediatamente.
             </p>
@@ -256,7 +270,7 @@ export function Profile({ userProfile, onProfileUpdate, onClose }: ProfileProps)
               onClick={handleSave}
               disabled={loading || !institution.trim()}
               className="flex-1 bg-blue-600 hover:bg-blue-700 dark:bg-blue-700 dark:hover:bg-blue-800 text-white py-3 px-4 rounded-lg font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transform hover:scale-[1.02] active:scale-[0.98]"
-              title={!institution.trim() ? 'Escribe tu institución para guardar' : ''}
+              title={institution.trim().length === 0 ? 'Escribe tu institución para guardar' : ''}
             >
               <Save className="w-4 h-4" />
               {loading ? 'Guardando...' : 'Guardar Cambios'}

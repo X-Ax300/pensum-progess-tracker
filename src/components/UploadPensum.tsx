@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react';
 import { collection, doc, getDoc, setDoc, writeBatch } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
+import { createPensumDocId, normalizeLookupValue, resolvePensumDocId } from '../lib/pensum';
 // we only need getDocument; import path has no types so ignore TS
 // setup worker for pdfjs to avoid runtime error
 import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
@@ -91,10 +92,15 @@ export function UploadPensum({
     const checkPensumExists = async () => {
       setCheckingPensum(true);
       try {
-        const pensumDocId = `${userInstitution}_${career}`;
-        const pensumRef = doc(db, 'pensum', pensumDocId);
-        const pensumDoc = await getDoc(pensumRef);
-        setPensumExists(pensumDoc.exists());
+        const existingPensumDocId = await resolvePensumDocId(db, userInstitution, career);
+        if (existingPensumDocId) {
+          setPensumExists(true);
+          return;
+        }
+
+        const legacyPensumRef = doc(db, 'pensum', `${userInstitution}_${career}`);
+        const legacyPensumDoc = await getDoc(legacyPensumRef);
+        setPensumExists(legacyPensumDoc.exists());
       } catch {
         setPensumExists(false);
       } finally {
@@ -440,7 +446,7 @@ export function UploadPensum({
   const saveSubjects = async (subjects: ParsedSubject[], career: string) => {
     if (!user || !userInstitution) throw new Error('Usuario no autenticado o institución no especificada');
 
-    const pensumDocId = `${userInstitution}_${career}`;
+    const pensumDocId = createPensumDocId(userInstitution, career);
     const pensumRef = doc(db, 'pensum', pensumDocId);
     
     // Crear documento de pensum con reintentos
@@ -453,6 +459,8 @@ export function UploadPensum({
         await setDoc(pensumRef, {
           careerName: career,
           institution: userInstitution,
+          careerNormalized: normalizeLookupValue(career),
+          institutionNormalized: normalizeLookupValue(userInstitution),
           uploadedBy: user.uid,
           uploadedAt: new Date(),
           totalSubjects: subjects.length,

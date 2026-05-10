@@ -9,6 +9,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
+import { resolvePensumDocId } from '../lib/pensum';
 import type { Subject, Prerequisite, UserProgress, SubjectWithProgress, ProgressStats, UserProfile } from '../types';
 
 export function usePensum() {
@@ -66,10 +67,13 @@ export function usePensum() {
       // Cargar subjects y prerequisites desde subcollections por institución+carrera
       if (profileData?.career) {
         try {
-          // Crear ID compuesto institución_carrera para el documento raíz del pensum
-          const pensumDocId = profileData.institution
-            ? `${profileData.institution}_${profileData.career}`
-            : profileData.career; // Compatibilidad con usuarios existentes sin institución
+          const resolvedPensumDocId = profileData.institution
+            ? await resolvePensumDocId(db, profileData.institution, profileData.career)
+            : null;
+          const pensumDocId = resolvedPensumDocId
+            || (profileData.institution
+              ? `${profileData.institution}_${profileData.career}`
+              : profileData.career);
 
           const [subjectsSnapshot, prerequisitesSnapshot] = await Promise.all([
             getDocs(collection(db, 'pensum', pensumDocId, 'subjects')),

@@ -1,6 +1,6 @@
-import { BookOpen, Award, Clock, TrendingUp, AlertCircle, LogOut, User, Moon, Sun } from 'lucide-react';
+import { BookOpen, Award, Clock, TrendingUp, AlertCircle, LogOut, User, Moon, Sun, Search } from 'lucide-react';
 import { signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, setDoc } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 import { usePensum } from '../hooks/usePensum';
 import { ProgressBar } from './ProgressBar';
@@ -10,9 +10,22 @@ import { useState, useCallback, useEffect } from 'react';
 import { UploadPensum } from './UploadPensum';
 import { Profile } from './Profile';
 import { useTheme } from '../contexts/ThemeContext';
+import { normalizeLookupValue, resolvePensumDocId } from '../lib/pensum';
 
 
 type FilterType = 'all' | 'pending' | 'in_progress' | 'completed';
+
+const CAREER_OPTIONS = [
+  'Ingeniería de Software',
+  'Ingeniería de Datos',
+  'Ingeniería en Ciberseguridad',
+  'Ciencias de la Computación',
+  'Ingeniería Civil',
+  'Ingeniería Mecánica',
+  'Licenciatura en Derecho',
+  'Administración de Empresas',
+  'Otra',
+] as const;
 
 export function Dashboard() {
   const { loading, error, updateSubjectStatus, updateValidatedStatus, getSubjectsWithProgress, calculateStats, refreshData, userProfile } = usePensum();
@@ -20,17 +33,61 @@ export function Dashboard() {
   const [filter, setFilter] = useState<FilterType>('all');
   const [showProfile, setShowProfile] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [subjectSearch, setSubjectSearch] = useState('');
   const [selectedInstitution, setSelectedInstitution] = useState(userProfile?.institution || '');
   const [selectedCareer, setSelectedCareer] = useState(userProfile?.career || '');
   const [checkingCareerPensum, setCheckingCareerPensum] = useState(false);
   const [selectedCareerPensumExists, setSelectedCareerPensumExists] = useState(false);
   const [onboardingLoading, setOnboardingLoading] = useState(false);
   const [onboardingError, setOnboardingError] = useState<string | null>(null);
+  const [availableInstitutions, setAvailableInstitutions] = useState<string[]>([]);
+  const [institutionCareerMap, setInstitutionCareerMap] = useState<Record<string, string[]>>({});
 
   useEffect(() => {
     setSelectedInstitution(userProfile?.institution || '');
     setSelectedCareer(userProfile?.career || '');
   }, [userProfile?.career, userProfile?.institution]);
+
+  useEffect(() => {
+    const loadPensumSuggestions = async () => {
+      try {
+        const snapshot = await getDocs(collection(db, 'pensum'));
+        const institutions = new Map<string, string>();
+        const careersByInstitution = new Map<string, Set<string>>();
+
+        snapshot.forEach((pensumDoc) => {
+          const data = pensumDoc.data() as Record<string, unknown>;
+          const institution = typeof data.institution === 'string' ? data.institution.trim() : '';
+          const career = typeof data.careerName === 'string' ? data.careerName.trim() : '';
+
+          if (!institution || !career) {
+            return;
+          }
+
+          const normalizedInstitution = normalizeLookupValue(institution);
+          institutions.set(normalizedInstitution, institutions.get(normalizedInstitution) || institution);
+
+          if (!careersByInstitution.has(normalizedInstitution)) {
+            careersByInstitution.set(normalizedInstitution, new Set<string>());
+          }
+          careersByInstitution.get(normalizedInstitution)!.add(career);
+        });
+
+        setAvailableInstitutions(Array.from(institutions.values()).sort((a, b) => a.localeCompare(b)));
+        setInstitutionCareerMap(
+          Array.from(careersByInstitution.entries()).reduce<Record<string, string[]>>((acc, [key, careers]) => {
+            acc[key] = Array.from(careers).sort((a, b) => a.localeCompare(b));
+            return acc;
+          }, {})
+        );
+      } catch {
+        setAvailableInstitutions([]);
+        setInstitutionCareerMap({});
+      }
+    };
+
+    loadPensumSuggestions();
+  }, []);
 
   useEffect(() => {
     const institution = selectedInstitution.trim();
@@ -43,8 +100,14 @@ export function Dashboard() {
     const checkCareerPensum = async () => {
       setCheckingCareerPensum(true);
       try {
-        const pensumSnapshot = await getDoc(doc(db, 'pensum', `${institution}_${selectedCareer}`));
-        setSelectedCareerPensumExists(pensumSnapshot.exists());
+        const resolvedPensumDocId = await resolvePensumDocId(db, institution, selectedCareer);
+        if (resolvedPensumDocId) {
+          setSelectedCareerPensumExists(true);
+          return;
+        }
+
+        const legacyPensumSnapshot = await getDoc(doc(db, 'pensum', `${institution}_${selectedCareer}`));
+        setSelectedCareerPensumExists(legacyPensumSnapshot.exists());
       } catch {
         setSelectedCareerPensumExists(false);
       } finally {
@@ -57,6 +120,10 @@ export function Dashboard() {
 
   const handleCareerSelection = useCallback(async () => {
     const institution = selectedInstitution.trim();
+    const normalizedInstitution = normalizeLookupValue(institution);
+    const canonicalInstitution = availableInstitutions.find(
+      (item) => normalizeLookupValue(item) === normalizedInstitution
+    ) || institution;
 
     if (!auth.currentUser) {
       setOnboardingError('Por favor inicia sesión para continuar');
@@ -80,7 +147,7 @@ export function Dashboard() {
       await setDoc(doc(db, 'userProfiles', auth.currentUser.uid), {
         userId: auth.currentUser.uid,
         career: selectedCareer,
-        institution,
+        institution: canonicalInstitution,
         theme,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -92,7 +159,23 @@ export function Dashboard() {
     } finally {
       setOnboardingLoading(false);
     }
-  }, [refreshData, selectedCareer, selectedInstitution, theme]);
+  }, [availableInstitutions, refreshData, selectedCareer, selectedInstitution, theme]);
+
+  const normalizedInstitutionInput = normalizeLookupValue(selectedInstitution);
+  const institutionSuggestions = normalizedInstitutionInput
+    ? availableInstitutions.filter((institution) =>
+        normalizeLookupValue(institution).includes(normalizedInstitutionInput)
+      ).slice(0, 6)
+    : availableInstitutions.slice(0, 6);
+  const institutionMatchedCareers = normalizedInstitutionInput
+    ? institutionCareerMap[normalizedInstitutionInput] || []
+    : [];
+  const selectedCareerMatchesInstitution = selectedCareer
+    ? institutionMatchedCareers.some((career) => normalizeLookupValue(career) === normalizeLookupValue(selectedCareer))
+    : false;
+  const careerOptions = institutionMatchedCareers.length > 0
+    ? [...institutionMatchedCareers, ...CAREER_OPTIONS.filter((career) => !institutionMatchedCareers.includes(career))]
+    : [...CAREER_OPTIONS];
 
   const handleLogout = async () => {
     try {
@@ -176,12 +259,23 @@ export function Dashboard() {
                   <input
                     id="onboarding-institution"
                     type="text"
+                    list="institution-suggestions"
                     value={selectedInstitution}
                     onChange={(e) => setSelectedInstitution(e.target.value)}
                     disabled={onboardingLoading}
                     className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white transition-all duration-200 disabled:opacity-50"
                     placeholder="Ej: UNICARIBE, UASD, PUCMM"
                   />
+                  <datalist id="institution-suggestions">
+                    {institutionSuggestions.map((institution) => (
+                      <option key={institution} value={institution} />
+                    ))}
+                  </datalist>
+                  {institutionSuggestions.length > 0 && (
+                    <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                      Sugerencias: {institutionSuggestions.join(', ')}
+                    </p>
+                  )}
                 </div>
 
                 <div>
@@ -196,32 +290,29 @@ export function Dashboard() {
                     className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white transition-all duration-200 disabled:opacity-50"
                   >
                     <option value="">Selecciona tu carrera</option>
-                    <option value="Ingeniería de Software">Ingeniería de Software</option>
-                    <option value="Ingeniería de Datos">Ingeniería de Datos</option>
-                    <option value="Ingeniería en Ciberseguridad">Ingeniería en Ciberseguridad</option>
-                    <option value="Ciencias de la Computación">Ciencias de la Computación</option>
-                    <option value="Ingeniería Civil">Ingeniería Civil</option>
-                    <option value="Ingeniería Mecánica">Ingeniería Mecánica</option>
-                    <option value="Licenciatura en
-Derecho">Licenciatura en
-Derecho</option>
-                    <option value="Administración de Empresas">Administración de Empresas</option>
-                    <option value="Otra">Otra</option>
+                    {careerOptions.map((career) => (
+                      <option key={career} value={career}>{career}</option>
+                    ))}
                   </select>
+                  {institutionMatchedCareers.length > 0 && (
+                    <p className="mt-2 text-xs text-green-600 dark:text-green-400">
+                      Carreras encontradas para esa institución: {institutionMatchedCareers.join(', ')}
+                    </p>
+                  )}
                 </div>
 
                 {selectedCareer && !checkingCareerPensum && (
                   <div className={`rounded-lg border p-4 ${
-                    selectedCareerPensumExists
+                    (selectedCareerPensumExists || selectedCareerMatchesInstitution)
                       ? 'bg-green-50 dark:bg-green-900 border-green-200 dark:border-green-700'
                       : 'bg-yellow-50 dark:bg-yellow-900 border-yellow-200 dark:border-yellow-700'
                   }`}>
                     <p className={`text-sm font-medium ${
-                      selectedCareerPensumExists
+                      (selectedCareerPensumExists || selectedCareerMatchesInstitution)
                         ? 'text-green-800 dark:text-green-200'
                         : 'text-yellow-800 dark:text-yellow-200'
                     }`}>
-                      {selectedCareerPensumExists
+                      {(selectedCareerPensumExists || selectedCareerMatchesInstitution)
                         ? 'Ese pensum ya está cargado. Solo guarda tu carrera para continuar.'
                         : 'Ese pensum todavía no está cargado. Guarda tu carrera y luego podrás subir el PDF.'}
                     </p>
@@ -284,9 +375,15 @@ Derecho</option>
 
   if (subjectsWithProgress.length === 0) return renderEmptyState();
 
-  const filteredSubjects = filter === 'all'
-    ? subjectsWithProgress
-    : subjectsWithProgress.filter(s => s.status === filter);
+  const normalizedSubjectSearch = normalizeLookupValue(subjectSearch);
+  const filteredSubjects = subjectsWithProgress.filter((subject) => {
+    const matchesStatus = filter === 'all' ? true : subject.status === filter;
+    const matchesSearch = !normalizedSubjectSearch
+      || normalizeLookupValue(subject.name).includes(normalizedSubjectSearch)
+      || normalizeLookupValue(subject.code).includes(normalizedSubjectSearch);
+
+    return matchesStatus && matchesSearch;
+  });
 
   const semesterGroups = filteredSubjects.reduce((acc, subject) => {
     if (!acc[subject.semester]) {
@@ -397,7 +494,18 @@ Derecho</option>
 
   const renderFilters = () => (
     <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-col gap-4">
+        <div className="relative">
+          <Search className="w-4 h-4 text-gray-400 dark:text-gray-500 absolute left-4 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={subjectSearch}
+            onChange={(e) => setSubjectSearch(e.target.value)}
+            placeholder="Buscar materia por nombre o código"
+            className="w-full pl-11 pr-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white transition-all duration-200"
+          />
+        </div>
+        <div className="flex flex-wrap gap-2">
         <button
           onClick={() => setFilter('all')}
           className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
@@ -438,6 +546,7 @@ Derecho</option>
         >
           Aprobadas ({stats.completedSubjects})
         </button>
+        </div>
       </div>
     </div>
   );
@@ -479,7 +588,11 @@ Derecho</option>
 
         {filteredSubjects.length === 0 && (
           <div className="text-center py-12">
-            <p className="text-gray-500 dark:text-gray-400">No hay materias con este filtro</p>
+            <p className="text-gray-500 dark:text-gray-400">
+              {subjectSearch.trim()
+                ? 'No se encontraron materias con esa búsqueda.'
+                : 'No hay materias con este filtro'}
+            </p>
           </div>
         )}
       </div>
